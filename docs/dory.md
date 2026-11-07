@@ -81,7 +81,7 @@ decode 每个 token 要读一遍权重和 KV。按 60 GB/s 的有效带宽（8 E
 
 按 8 GiB 的显存预算，128K 和 256K（last_loop + FP8）都放得下；单块 1 GiB 也够（最大的张量 lm_head 0.63 GiB，256K 时每个
 全局层 KV 512 MiB）。前提是权重 CPU / GPU 共用一份（统一内存，mmap 的页直接做缓冲区）。decode 受带宽限制，CPU 和 GPU 共用
-同一组内存，GPU 快不了多少；prefill 受算力限制，GPU 约快 3 倍，所以先做 GPU prefill（q·k 要 FP32 累加，见下一节）。
+同一组内存，GPU 快不了多少；prefill 受算力限制，GPU 约快 3 倍，所以先做 GPU prefill（q·k 要 FP32 累加，见下一节）。各项加速方法和顺序见 [gpu-adreno.md](gpu-adreno.md)。
 
 ## 精度注意：注意力很尖
 

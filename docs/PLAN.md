@@ -24,7 +24,7 @@ Dory 1.0 4B NVFP4，首台设备联想 Y900（SM8750P，15 GiB）。上下文要
 | 2 CPU 速度 | NEON：NVFP4 GEMV 做到实测带宽 70%、GEMM（i8mm W4A8，A/B 精度后再定默认）、注意力（FP8 KV 直接解码）、范数 / RoPE；线程绑核 | 待做 |
 | 2b 真机验收 | App 真机启动、DSH Go X 真实任务、息屏 / 后台 30 分钟、首请求不卡、内存不触发 LMK、10 分钟持续速度 | 待做 |
 | 3 加速包 | FP8 KV 更细的缩放（每 32 个元素）、提示词查找投机解码（n-gram，验证 k 个 token 与 decode 一步读的权重一样多）、多个会话槽 | 待做 |
-| 4 GPU / NPU | Adreno（OpenCL）prefill；Hexagon（QNN）可选。Adreno 830 实测 66 GB/s、FP16 5.97 TFLOP/s，8 GiB 显存预算够 128K / 256K（[dory.md](dory.md#gpu-预算y900-的-adreno-8302026-11-07-实测)）；prefill 是 DSH 大提示的瓶颈，真机摸底后可以提到阶段 2 之前 | 待做 |
+| 4 GPU / NPU | Adreno（OpenCL）prefill；Hexagon（QNN）可选。Adreno 830 实测 66 GB/s、FP16 5.97 TFLOP/s，8 GiB 显存预算够 128K / 256K（[dory.md](dory.md#gpu-预算y900-的-adreno-8302026-11-07-实测)）；prefill 是 DSH 大提示的瓶颈，真机摸底后可以提到阶段 2 之前；方案见 [gpu-adreno.md](gpu-adreno.md) | 待做 |
 | 5 更多模型 | 新模型 = `packs/` 一个目录 + `configs/` 一张卡片 | 待做 |
 
 ## 已知问题与限制
