@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <unordered_map>
@@ -31,41 +32,77 @@ float4 unpack4(ushort b){
     v=select(v,convert_float4(mag)*.5f,mag<2);
     return as_float4(as_uint4(v)|((code&8)<<28));
 }
-float weight4(__global const uchar* c,__global const uchar* s,int row,int k,int K){
-    uchar v=c[(size_t)row*(K/2)+k/2];
-    return e2[(k&1)?v>>4:v&15]*fp8(s[(size_t)row*(K/16)+k/16]);
+// NVFP4 on the device is k-major: codes [K/32][N] in 16-byte blocks (the 32 codes of one row, low nibble first),
+// scales [K/32][N] as two E4M3 bytes (the low one for the first 16). The work-items of a wave take one row each,
+// so they read consecutive blocks while the activations are one address for all of them.
+float weight4(__global const uchar* c,__global const uchar* s,int row,int k,int K,int N){
+    size_t blk=(size_t)(k/32)*N+row;
+    uchar v=c[blk*16+(k%32)/2];
+    return e2[(k&1)?v>>4:v&15]*fp8(s[blk*2+(k%32)/16]);
 }
-// Four rows per workgroup, 32 lanes per row. Decode preserves packed weights.
+// x . 32 weights of block b: two 16-weight groups, each summed and then scaled
+float block32(__global const uchar*c,__global const uchar*s,size_t blk,__global const float*xb){
+    uint4 q=vload4(0,(__global const uint*)(c+blk*16));
+    ushort sv=((__global const ushort*)s)[blk];
+    float4 g0=unpack4(q.x)*vload4(0,xb),g1=unpack4(q.z)*vload4(4,xb);
+    g0=mad(unpack4(q.x>>16),vload4(1,xb),g0);g0=mad(unpack4(q.y),vload4(2,xb),g0);g0=mad(unpack4(q.y>>16),vload4(3,xb),g0);
+    g1=mad(unpack4(q.z>>16),vload4(5,xb),g1);g1=mad(unpack4(q.w),vload4(6,xb),g1);g1=mad(unpack4(q.w>>16),vload4(7,xb),g1);
+    return mad(fp8(sv&255),g0.x+g0.y+g0.z+g0.w,fp8(sv>>8)*(g1.x+g1.y+g1.z+g1.w));
+}
+// the same through an image1d_buffer view of the codes (RGBA32UI, one block per texel): faster on Adreno 830 for
+// the wide K = 2560 projections (qkvg, gate / up: 47-50 against 41-43 GB/s), slower for o and down
+float block32i(__read_only image1d_buffer_t c,__global const uchar*s,size_t blk,__global const float*xb){
+    uint4 q=read_imageui(c,(int)blk);
+    ushort sv=((__global const ushort*)s)[blk];
+    float4 g0=unpack4(q.x)*vload4(0,xb),g1=unpack4(q.z)*vload4(4,xb);
+    g0=mad(unpack4(q.x>>16),vload4(1,xb),g0);g0=mad(unpack4(q.y),vload4(2,xb),g0);g0=mad(unpack4(q.y>>16),vload4(3,xb),g0);
+    g1=mad(unpack4(q.z>>16),vload4(5,xb),g1);g1=mad(unpack4(q.w),vload4(6,xb),g1);g1=mad(unpack4(q.w>>16),vload4(7,xb),g1);
+    return mad(fp8(sv&255),g0.x+g0.y+g0.z+g0.w,fp8(sv>>8)*(g1.x+g1.y+g1.z+g1.w));
+}
+// Decode GEMV for up to four fused projections: one output row per work-item, the KS = get_local_size(1)
+// work-items of a row take a share of K each and add up in local memory (local size (256 / KS, KS) at most).
+// The row's projection: counts are the rows of each, from the start of the fused output.
+#define FUSED_ROW(counts) \
+    int outrow=get_global_id(0),lr=get_local_id(0),ks=get_local_id(1),KS=get_local_size(1); \
+    int row=outrow,N=counts.x+counts.y+counts.z+counts.w,n=counts.x,j=0; \
+    if(row>=counts.x){row-=counts.x;n=counts.y;j=1; \
+        if(row>=counts.y){row-=counts.y;n=counts.z;j=2; \
+            if(row>=counts.z){row-=counts.z;n=counts.w;j=3;}}} \
+    int nb=K/32,per=(nb+KS-1)/KS,b0=ks*per,b1=min(nb,b0+per)
+float ksum(float acc,int ks,int lr,int KS,__local float*red){   // the KS shares of a row, valid for ks == 0
+    red[ks*64+lr]=acc;barrier(CLK_LOCAL_MEM_FENCE);
+    if(ks==0)for(int i=1;i<KS;i++)acc+=red[i*64+lr];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    return acc;
+}
 __kernel void gemv4(__global const uchar*c0,__global const uchar*s0,
                    __global const uchar*c1,__global const uchar*s1,
                    __global const uchar*c2,__global const uchar*s2,
                    __global const uchar*c3,__global const uchar*s3,
                    __global const float*x,__global float*y,int K,int4 counts,float4 scales,int off){
-    int lid=get_local_id(0),lane=lid&31,outrow=get_group_id(0)*4+lid/32;
-    int row=outrow,N=counts.x+counts.y+counts.z+counts.w;
-    __global const uchar*c=c0;__global const uchar*s=s0;float scale=scales.x;
-    if(row>=counts.x){row-=counts.x;c=c1;s=s1;scale=scales.y;
-        if(row>=counts.y){row-=counts.y;c=c2;s=s2;scale=scales.z;
-            if(row>=counts.z){row-=counts.z;c=c3;s=s3;scale=scales.w;}}}
-    float4 acc=0;
-    if(outrow<N)for(int g=lane;g<K/16;g+=32){
-        ushort4 v=vload4(0,(__global const ushort*)(c+(size_t)row*(K/2)+g*8));
-        float4 part=unpack4(v.x)*vload4(0,x+g*16);
-        part=mad(unpack4(v.y),vload4(0,x+g*16+4),part);
-        part=mad(unpack4(v.z),vload4(0,x+g*16+8),part);
-        part=mad(unpack4(v.w),vload4(0,x+g*16+12),part);
-        acc=mad(part,(float4)(fp8(s[(size_t)row*(K/16)+g])),acc);
+    FUSED_ROW(counts);
+    __global const uchar*c=j==0?c0:j==1?c1:j==2?c2:c3;__global const uchar*s=j==0?s0:j==1?s1:j==2?s2:s3;
+    __local float red[8*64];
+    float acc=0;
+    if(outrow<N)for(int b=b0;b<b1;b++)acc+=block32(c,s,(size_t)b*n+row,x+b*32);
+    acc=ksum(acc,ks,lr,KS,red);
+    if(ks==0&&outrow<N)y[off+outrow]=acc*(j==0?scales.x:j==1?scales.y:j==2?scales.z:scales.w);
+}
+__kernel void gemv4i(__read_only image1d_buffer_t c0,__global const uchar*s0,
+                    __read_only image1d_buffer_t c1,__global const uchar*s1,
+                    __read_only image1d_buffer_t c2,__global const uchar*s2,
+                    __read_only image1d_buffer_t c3,__global const uchar*s3,
+                    __global const float*x,__global float*y,int K,int4 counts,float4 scales,int off){
+    FUSED_ROW(counts);
+    __global const uchar*s=j==0?s0:j==1?s1:j==2?s2:s3;
+    __local float red[8*64];
+    float acc=0;
+    if(outrow<N)for(int b=b0;b<b1;b++){   // images cannot be chosen through a variable: one call per projection
+        size_t blk=(size_t)b*n+row;
+        acc+=j==0?block32i(c0,s,blk,x+b*32):j==1?block32i(c1,s,blk,x+b*32):j==2?block32i(c2,s,blk,x+b*32):block32i(c3,s,blk,x+b*32);
     }
-    float sum=acc.x+acc.y+acc.z+acc.w;
-#ifdef cl_khr_subgroup_shuffle_relative
-    if(get_sub_group_size()>=32){
-        for(int step=16;step;step/=2)sum+=sub_group_shuffle_xor(sum,step);
-        if(lane==0&&outrow<N)y[off+outrow]=sum*scale;return;
-    }
-#endif
-    __local float sums[128];sums[lid]=sum;barrier(CLK_LOCAL_MEM_FENCE);
-    for(int step=16;step;step/=2){if(lane<step)sums[lid]+=sums[lid+step];barrier(CLK_LOCAL_MEM_FENCE);}
-    if(lane==0&&outrow<N)y[off+outrow]=sums[lid]*scale;
+    acc=ksum(acc,ks,lr,KS,red);
+    if(ks==0&&outrow<N)y[off+outrow]=acc*(j==0?scales.x:j==1?scales.y:j==2?scales.z:scales.w);
 }
 __kernel void gemv16(__global const ushort*w,__global const float*x,__global float*y,int K,int N,int offset){
     int lid=get_local_id(0),lane=lid&31,row=get_group_id(0)*4+lid/32;float4 acc=0;
@@ -84,47 +121,52 @@ __kernel void gemv16(__global const ushort*w,__global const float*x,__global flo
     for(int step=16;step;step/=2){if(lane<step)sums[lid]+=sums[lid+step];barrier(CLK_LOCAL_MEM_FENCE);}
     if(lane==0&&row<N)y[offset+row]=sums[lid];
 }
-// 2..MRMAX activation rows at once (verifying speculative drafts): the weights are read and decoded once and used
-// for every row, so the call costs about what one row does. Same layout as gemv4 / gemv16; the outputs of a
-// projection are an [m][n] block (gemm4's layout). Loops over rows are unrolled so the accumulators stay registers.
+// 2..MRMAX activation rows at once (verifying speculative drafts): each block of weights is read and decoded once
+// and used for every row, so the call costs about what one row does. Same layout and work split as gemv4; the
+// outputs of a projection are an [m][n] block (gemm4's layout). Loops over rows are unrolled so the accumulators
+// stay registers.
 #define MRMAX 16
-float lanes32(float v,__local float*sums,int lid,int lane){
-    sums[lid]=v;barrier(CLK_LOCAL_MEM_FENCE);
-    for(int step=16;step;step/=2){if(lane<step)sums[lid]+=sums[lid+step];barrier(CLK_LOCAL_MEM_FENCE);}
-    float r=sums[lid-lane];barrier(CLK_LOCAL_MEM_FENCE);
-    return r;
-}
 __kernel void gemvm(__global const uchar*c0,__global const uchar*s0,
                     __global const uchar*c1,__global const uchar*s1,
                     __global const uchar*c2,__global const uchar*s2,
                     __global const uchar*c3,__global const uchar*s3,
                     __global const float*x,__global float*y,int K,int4 counts,float4 scales,int off,int m){
-    int lid=get_local_id(0),lane=lid&31,outrow=get_group_id(0)*4+lid/32;
-    int row=outrow,N=counts.x+counts.y+counts.z+counts.w,base=0,n=counts.x;
-    __global const uchar*c=c0;__global const uchar*s=s0;float scale=scales.x;
-    if(row>=counts.x){row-=counts.x;base=counts.x;n=counts.y;c=c1;s=s1;scale=scales.y;
-        if(row>=counts.y){row-=counts.y;base+=counts.y;n=counts.z;c=c2;s=s2;scale=scales.z;
-            if(row>=counts.z){row-=counts.z;base+=counts.z;n=counts.w;c=c3;s=s3;scale=scales.w;}}}
-    float4 acc[MRMAX];
+    FUSED_ROW(counts);
+    __global const uchar*c=j==0?c0:j==1?c1:j==2?c2:c3;__global const uchar*s=j==0?s0:j==1?s1:j==2?s2:s3;
+    const float scale=j==0?scales.x:j==1?scales.y:j==2?scales.z:scales.w;
+    const int base=outrow-row;   // the first row of this projection in the fused output
+    float acc[MRMAX];
 #pragma unroll
     for(int r=0;r<MRMAX;r++)acc[r]=0;
-    if(outrow<N)for(int g=lane;g<K/16;g+=32){
-        ushort4 v=vload4(0,(__global const ushort*)(c+(size_t)row*(K/2)+g*8));
-        float sc=fp8(s[(size_t)row*(K/16)+g]);
-        float4 w0=unpack4(v.x)*sc,w1=unpack4(v.y)*sc,w2=unpack4(v.z)*sc,w3=unpack4(v.w)*sc;
+    if(outrow<N)for(int b=b0;b<b1;b++){
+        size_t blk=(size_t)b*n+row;
+        uint4 q=vload4(0,(__global const uint*)(c+blk*16));
+        ushort sv=((__global const ushort*)s)[blk];
+        float s0=fp8(sv&255),s1=fp8(sv>>8);
+        float4 w0=unpack4(q.x),w1=unpack4(q.x>>16),w2=unpack4(q.y),w3=unpack4(q.y>>16);
+        float4 w4=unpack4(q.z),w5=unpack4(q.z>>16),w6=unpack4(q.w),w7=unpack4(q.w>>16);
 #pragma unroll
         for(int r=0;r<MRMAX;r++)if(r<m){
-            __global const float*xr=x+(size_t)r*K+g*16;
-            acc[r]=mad(w0,vload4(0,xr),acc[r]);acc[r]=mad(w1,vload4(1,xr),acc[r]);
-            acc[r]=mad(w2,vload4(2,xr),acc[r]);acc[r]=mad(w3,vload4(3,xr),acc[r]);
+            __global const float*xr=x+(size_t)r*K+b*32;
+            float4 g0=w0*vload4(0,xr),g1=w4*vload4(4,xr);
+            g0=mad(w1,vload4(1,xr),g0);g0=mad(w2,vload4(2,xr),g0);g0=mad(w3,vload4(3,xr),g0);
+            g1=mad(w5,vload4(5,xr),g1);g1=mad(w6,vload4(6,xr),g1);g1=mad(w7,vload4(7,xr),g1);
+            acc[r]+=mad(s0,g0.x+g0.y+g0.z+g0.w,s1*(g1.x+g1.y+g1.z+g1.w));   // as block32: a verify row = a decode row
         }
     }
-    __local float sums[128];
+    __local float red[8*64];
 #pragma unroll
     for(int r=0;r<MRMAX;r++)if(r<m){
-        float sum=lanes32(acc[r].x+acc[r].y+acc[r].z+acc[r].w,sums,lid,lane);
-        if(lane==0&&outrow<N)y[off+(size_t)base*m+(size_t)r*n+row]=sum*scale;
+        float t=ksum(acc[r],ks,lr,KS,red);
+        if(ks==0&&outrow<N)y[off+(size_t)base*m+(size_t)r*n+row]=t*scale;
     }
+}
+// the BF16 head keeps its row-major layout: 32 lanes per row, summed in local memory
+float lanes32(float v,__local float*sums,int lid,int lane){
+    sums[lid]=v;barrier(CLK_LOCAL_MEM_FENCE);
+    for(int step=16;step;step/=2){if(lane<step)sums[lid]+=sums[lid+step];barrier(CLK_LOCAL_MEM_FENCE);}
+    float r=sums[lid-lane];barrier(CLK_LOCAL_MEM_FENCE);
+    return r;
 }
 __kernel void gemv16m(__global const ushort*w,__global const float*x,__global float*y,int K,int N,int m){
     int lid=get_local_id(0),lane=lid&31,row=get_group_id(0)*4+lid/32;
@@ -154,7 +196,7 @@ __kernel void gemm4(__global const uchar*c,__global const uchar*s,__global const
             int ar=i/32,ak=i%32,gr=get_group_id(1)*64+ar;
             aa[ar][ak]=(gr<M&&base+ak<K)?x[(size_t)gr*K+base+ak]:0;
             int bk=i/64,bn=i%64,gn=get_group_id(0)*64+bn;
-            bb[bk][bn]=(gn<N&&base+bk<K)?weight4(c,s,gn,base+bk,K):0;
+            bb[bk][bn]=(gn<N&&base+bk<K)?weight4(c,s,gn,base+bk,K,N):0;
         }
         barrier(CLK_LOCAL_MEM_FENCE);
         for(int k=0;k<32;k++){
@@ -209,8 +251,10 @@ __kernel void gemmt(__global const uchar*c,__global const uchar*s,__global const
          float8 a=m0+r<M?vload8(0,A+(size_t)(m0+r)*K+k0+kk):(float8)0;
          vstore8(TO_T8(a),0,&As[r][kk]);}
         {int r=tid/2,h=(tid%2)*16,n=n0+r;
-         uint2 q=vload2(0,(__global const uint*)(c+(size_t)n*(K/2)+(k0+h)/2));
-         float sc=fp8(s[(size_t)n*(K/16)+(k0+h)/16]);
+         size_t blk=(size_t)(k0/32)*N+n;   // the two work-items of a row read the halves of its block
+         uint2 q=vload2(0,(__global const uint*)(c+blk*16+h/2));
+         ushort sv=((__global const ushort*)s)[blk];
+         float sc=fp8(h?sv>>8:sv&255);
          float4 w0=unpack4(q.x)*sc,w1=unpack4(q.x>>16)*sc,w2=unpack4(q.y)*sc,w3=unpack4(q.y>>16)*sc;
          float wv[16]={w0.x,w0.y,w0.z,w0.w,w1.x,w1.y,w1.z,w1.w,w2.x,w2.y,w2.z,w2.w,w3.x,w3.y,w3.z,w3.w};
          for(int i=0;i<16;i++)Bs[h+i][r]=(T)wv[i];}
@@ -239,7 +283,7 @@ struct OpenClBackend::Impl {
       X(clGetProgramBuildInfo) X(clCreateKernel) X(clCreateBuffer) X(clSetKernelArg) X(clEnqueueNDRangeKernel) \
           X(clEnqueueWriteBuffer) X(clEnqueueReadBuffer) X(clFinish) X(clReleaseMemObject) X(clReleaseKernel)  \
               X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext) X(clEnqueueCopyBuffer) \
-                  X(clGetEventProfilingInfo) X(clReleaseEvent) X(clGetKernelInfo)
+                  X(clGetEventProfilingInfo) X(clReleaseEvent) X(clGetKernelInfo) X(clCreateImage)
 #define DECL(n) decltype(&::n) n = nullptr;
   API(DECL)
 #undef DECL
@@ -274,8 +318,9 @@ struct OpenClBackend::Impl {
   cl_context context = nullptr;
   cl_command_queue queue = nullptr;
   cl_program program = nullptr;
-  cl_kernel gemv4 = nullptr, gemm4 = nullptr, gemv16 = nullptr, gemm16 = nullptr, gemvm = nullptr, gemv16m = nullptr,
-            gemmt = nullptr;
+  cl_kernel gemv4 = nullptr, gemv4i = nullptr, gemm4 = nullptr, gemv16 = nullptr, gemm16 = nullptr, gemvm = nullptr,
+            gemv16m = nullptr, gemmt = nullptr;
+  size_t image_max = 0;   // texels of an image1d_buffer
   bool fp16 = false, use_gemmt = true;   // the device has cl_khr_fp16; XTG_GEMM=fp32 keeps gemm4 for prefill
   cl_mem input = nullptr, output = nullptr;
   size_t input_size = 0, output_size = 0, weight_size = 0;
@@ -283,7 +328,7 @@ struct OpenClBackend::Impl {
   size_t decode_nv_calls = 0, decode_bf_calls = 0;
   std::string name;
   struct Weight {
-    cl_mem codes = nullptr, scales = nullptr;
+    cl_mem codes = nullptr, scales = nullptr, image = nullptr;   // image: an RGBA32UI view of the codes
   };
   std::unordered_map<const void*, Weight> weights;
 
@@ -302,12 +347,13 @@ struct OpenClBackend::Impl {
       if (total > 0) log("GPU kernels total %.3f ms", total * 1e3);
     }
     for (auto& [key, w] : weights) {
+      if (w.image) clReleaseMemObject(w.image);
       if (w.codes) clReleaseMemObject(w.codes);
       if (w.scales) clReleaseMemObject(w.scales);
     }
     if (input) clReleaseMemObject(input);
     if (output) clReleaseMemObject(output);
-    for (auto k : {gemv4, gemm4, gemv16, gemm16, gemvm, gemv16m, gemmt})
+    for (auto k : {gemv4, gemv4i, gemm4, gemv16, gemm16, gemvm, gemv16m, gemmt})
       if (k) clReleaseKernel(k);
     for (auto& [key, k] : kernels) clReleaseKernel(k);
     for (auto& [key, p] : programs) clReleaseProgram(p);
@@ -359,6 +405,8 @@ struct OpenClBackend::Impl {
       return k;
     };
     gemv4 = create("gemv4");
+    gemv4i = create("gemv4i");
+    clGetDeviceInfo(device, CL_DEVICE_IMAGE_MAX_BUFFER_SIZE, sizeof(image_max), &image_max, nullptr);
     gemm4 = create("gemm4");
     gemv16 = create("gemv16");
     gemm16 = create("gemm16");
@@ -370,6 +418,11 @@ struct OpenClBackend::Impl {
     fp16 = std::strstr(ext, "cl_khr_fp16") != nullptr;
     const char* gm = std::getenv("XTG_GEMM");
     use_gemmt = !(gm && std::string(gm) == "fp32");
+    no_image = std::getenv("XTG_GEMV_NOIMAGE") != nullptr;
+    if (const char* v = std::getenv("XTG_GEMV_KS")) {
+      gemv_ks = std::atoi(v);
+      XTG_CHECK(gemv_ks == 1 || gemv_ks == 2 || gemv_ks == 4 || gemv_ks == 8, "XTG_GEMV_KS must be 1, 2, 4 or 8");
+    }
     log("OpenCL device: %s (FP32 accumulation, packed weights; prefill GEMM %s)", name.c_str(),
         use_gemmt ? (fp16 ? "FP16 tiles" : "FP32 tiles") : "gemm4");
   }
@@ -396,6 +449,29 @@ struct OpenClBackend::Impl {
   void arg(cl_kernel k, int i, T v) {
     check(clSetKernelArg(k, i, sizeof(v), &v), "kernel argument");
   }
+  // gemv4 / gemvm: one output row per work-item and ks work-items per row (local size (256 / ks up to 64) x ks)
+  void dispatch_rows(cl_kernel k, int rows, int K) {
+    const size_t ks = size_t(split_k(K)), l0 = std::min<size_t>(64, 256 / ks);
+    size_t local[2] = {l0, ks}, global[2] = {(size_t(rows) + l0 - 1) / l0 * l0, ks};
+    check(clEnqueueNDRangeKernel(queue, k, 2, nullptr, global, local, 0, nullptr, event_for(k)), "dispatch");
+  }
+  // K shares per row, measured on the Adreno 830: 2 for K <= 3072 (read through the image), 8 above, at least 8
+  // blocks of 32 each. From K alone, so a fused call, a single projection and a verify step add in the same order;
+  // XTG_GEMV_KS (1, 2, 4 or 8) overrides it
+  int split_k(int K) const {
+    int ks = gemv_ks ? gemv_ks : K <= 3072 ? 2 : 8;
+    while (ks > 1 && K / 32 / ks < 8) ks /= 2;
+    return ks;
+  }
+  // the decode GEMV for K: through the codes' images where every projection has one (K <= 3072)
+  cl_kernel gemv_for(int K, const std::vector<const Weight*>& bs) const {
+    if (K > 3072 || no_image) return gemv4;
+    for (auto b : bs)
+      if (!b->image) return gemv4;
+    return gemv4i;
+  }
+  int gemv_ks = 0;
+  bool no_image = false;   // XTG_GEMV_NOIMAGE: decode through global loads only
   void dispatch(cl_kernel k, int m, int n) {
     size_t local[2] = {16, 16}, global[2] = {size_t((n + 63) / 64) * 16, size_t((m + 63) / 64) * 16};
     if (m == 1) {
@@ -414,10 +490,28 @@ void OpenClBackend::prepare(const Nvfp4Weight& w) {
   if (!w.codes) return;
   auto& p = *impl_;
   if (p.weights.count(w.codes)) return;
-  XTG_CHECK(w.k > 0 && w.k % 16 == 0 && w.n_out > 0, "Invalid GPU NVFP4 shape");
+  XTG_CHECK(w.k > 0 && w.k % 32 == 0 && w.n_out > 0, "Invalid GPU NVFP4 shape");
+  // to the k-major layout of the kernels: block b of row r (32 codes, two scales) goes to b * N + r
+  const size_t n = size_t(w.n_out), blocks = size_t(w.k) / 32;
+  std::vector<uint8_t> codes(n * w.k / 2), scales(n * w.k / 16);
+  for (size_t r = 0; r < n; ++r)
+    for (size_t b = 0; b < blocks; ++b) {
+      std::memcpy(&codes[(b * n + r) * 16], w.codes + r * (w.k / 2) + b * 16, 16);
+      std::memcpy(&scales[(b * n + r) * 2], w.scales + r * (w.k / 16) + b * 2, 2);
+    }
   auto& b = p.weights[w.codes];
-  b.codes = p.copy(w.codes, size_t(w.n_out) * w.k / 2);
-  b.scales = p.copy(w.scales, size_t(w.n_out) * w.k / 16);
+  b.codes = p.copy(codes.data(), codes.size());
+  b.scales = p.copy(scales.data(), scales.size());
+  if (n * blocks <= p.image_max) {   // a view, no copy
+    cl_image_format fmt{CL_RGBA, CL_UNSIGNED_INT32};
+    cl_image_desc desc{};
+    desc.image_type = CL_MEM_OBJECT_IMAGE1D_BUFFER;
+    desc.image_width = n * blocks;
+    desc.buffer = b.codes;
+    cl_int e;
+    b.image = p.clCreateImage(p.context, CL_MEM_READ_ONLY, &fmt, &desc, nullptr, &e);
+    if (e != CL_SUCCESS) b.image = nullptr;
+  }
 }
 void OpenClBackend::prepare(const Bf16Weight& w) {
   auto& p = *impl_;
@@ -446,25 +540,28 @@ void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, const floa
     int offset = 0;
     if (m == 1) {
       XTG_CHECK(ws.size() <= 4, "GPU decode supports at most four fused projections");
+      std::vector<const Impl::Weight*> bs;
+      for (auto w : ws) bs.push_back(&p.weights.at(w->codes));
+      cl_kernel k = p.gemv_for(K, bs);
       cl_int4 counts{};
       cl_float4 scales{};
       for (int j = 0; j < 4; ++j) {
         const auto& w = *ws[j < int(ws.size()) ? j : 0];
         auto b = p.weights.at(w.codes);
-        p.arg(p.gemv4, j * 2, b.codes);
-        p.arg(p.gemv4, j * 2 + 1, b.scales);
+        p.arg(k, j * 2, k == p.gemv4i ? b.image : b.codes);
+        p.arg(k, j * 2 + 1, b.scales);
         if (j < int(ws.size())) {
           counts.s[j] = w.n_out;
           scales.s[j] = w.global;
         }
       }
-      p.arg(p.gemv4, 8, p.input);
-      p.arg(p.gemv4, 9, p.output);
-      p.arg(p.gemv4, 10, K);
-      p.arg(p.gemv4, 11, counts);
-      p.arg(p.gemv4, 12, scales);
-      p.arg(p.gemv4, 13, 0);
-      p.dispatch(p.gemv4, 1, int(count));
+      p.arg(k, 8, p.input);
+      p.arg(k, 9, p.output);
+      p.arg(k, 10, K);
+      p.arg(k, 11, counts);
+      p.arg(k, 12, scales);
+      p.arg(k, 13, 0);
+      p.dispatch_rows(k, int(count), K);
       for (size_t j = 0; j < ws.size(); ++j) {
         check(p.clEnqueueReadBuffer(p.queue, p.output, CL_FALSE, size_t(offset) * 4, size_t(ws[j]->n_out) * 4, ys[j], 0,
                                     nullptr, nullptr),
@@ -602,16 +699,18 @@ void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, Mem x, int
     XTG_CHECK(w->k == K, "GPU input widths differ");
     prepare(*w);
   }
-  if (m <= 16) {   // one row: gemv4; up to 16 (a verify step): gemvm, the weights still read once
+  if (m <= 16) {   // one row: gemv4 / gemv4i; up to 16 (a verify step): gemvm, the weights still read once
     XTG_CHECK(ws.size() <= 4, "GPU decode supports at most four fused projections");
-    cl_kernel k = m == 1 ? p.gemv4 : p.gemvm;
+    std::vector<const Impl::Weight*> bs;
+    for (auto w : ws) bs.push_back(&p.weights.at(w->codes));
+    cl_kernel k = m == 1 ? p.gemv_for(K, bs) : p.gemvm;
     cl_int4 counts{};
     cl_float4 scales{};
     int total = 0;
     for (int j = 0; j < 4; ++j) {
       const auto& w = *ws[j < int(ws.size()) ? j : 0];
       auto b = p.weights.at(w.codes);
-      p.arg(k, j * 2, b.codes);
+      p.arg(k, j * 2, k == p.gemv4i ? b.image : b.codes);
       p.arg(k, j * 2 + 1, b.scales);
       if (j < int(ws.size())) {
         counts.s[j] = w.n_out;
@@ -626,7 +725,7 @@ void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, Mem x, int
     p.arg(k, 12, scales);
     p.arg(k, 13, int(y_offset));
     if (m > 1) p.arg(k, 14, m);
-    p.dispatch(k, 1, total);
+    p.dispatch_rows(k, total, K);
     return;
   }
   size_t offset = y_offset;

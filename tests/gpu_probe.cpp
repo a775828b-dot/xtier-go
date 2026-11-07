@@ -6,6 +6,8 @@
 //   read device|hostptr          streaming read bandwidth of a 512 MiB buffer, driver-owned and ALLOC_HOST_PTR
 //   gemv4 M=1..16                NVFP4 7168 x 2560 against M activation rows at once (what speculative decoding
 //                                needs): time per call and the weight bytes per second
+//   gemvt                        the same with the weights k-major (one row per work-item) on Dory's projection
+//                                shapes, global loads or an image1d_buffer, K split over 1..8 work-items, M = 1..16
 //   peak fp32|fp16|int8dot       register-only multiply-add throughput
 // Every kernel result is checked against the CPU.
 #define CL_TARGET_OPENCL_VERSION 300
@@ -30,7 +32,7 @@ namespace {
   X(clCreateProgramWithSource) X(clBuildProgram) X(clGetProgramBuildInfo) X(clCreateKernel) X(clCreateBuffer) \
   X(clSetKernelArg) X(clEnqueueNDRangeKernel) X(clEnqueueWriteBuffer) X(clEnqueueReadBuffer) X(clFinish)    \
   X(clReleaseMemObject) X(clEnqueueMapBuffer) X(clEnqueueUnmapMemObject) X(clGetEventProfilingInfo)          \
-  X(clWaitForEvents) X(clReleaseEvent)
+  X(clWaitForEvents) X(clReleaseEvent) X(clCreateImage)
 #define DECL(n) decltype(&::n) p_##n = nullptr;
 API(DECL)
 #undef DECL
@@ -100,6 +102,78 @@ __kernel void gemv4m(__global const uchar* c, __global const uchar* s, __global 
     if (lane == 0 && row < N) y[(size_t)m * N + row] = red[lid] * scale;
     barrier(CLK_LOCAL_MEM_FENCE);
   }
+}
+
+// The same product with the weights k-major: codes [K/32][N] as uint4 (the 32 codes of one row, low nibble first),
+// scales [K/32][N] as ushort (two E4M3, the low byte for the first 16). Rows go to consecutive work-items, so a wave
+// reads consecutive 16-byte blocks and the activations are the same address for all of it; the KS work-items of a
+// row (local size L0 x KS, L0 x KS <= 256) split K and add up in local memory. Variants: IMG reads the codes through
+// an image1d_buffer, XCONST the activations from __constant memory, ROWS > 1 rows per work-item (r, r + G, ...)
+// with the activations loaded once for all of them.
+#ifndef KS
+#define KS 1
+#endif
+#ifndef ROWS
+#define ROWS 1
+#endif
+#ifdef IMG
+#define CODES __read_only image1d_buffer_t c
+#define LOADQ(i) read_imageui(c, (int)(i))
+#else
+#define CODES __global const uint4* c
+#define LOADQ(i) c[i]
+#endif
+#ifdef XCONST
+#define XPTR __constant const float*
+#else
+#define XPTR __global const float*
+#endif
+float dot32(uint4 q, uint sc, float4 x0, float4 x1, float4 x2, float4 x3, float4 x4, float4 x5, float4 x6, float4 x7) {
+  float4 g0 = e2m1x4(q.x) * x0, g1 = e2m1x4(q.z) * x4;
+  g0 = mad(e2m1x4(q.x >> 16), x1, g0); g0 = mad(e2m1x4(q.y), x2, g0); g0 = mad(e2m1x4(q.y >> 16), x3, g0);
+  g1 = mad(e2m1x4(q.z >> 16), x5, g1); g1 = mad(e2m1x4(q.w), x6, g1); g1 = mad(e2m1x4(q.w >> 16), x7, g1);
+  return mad(e4m3(sc & 255), g0.x + g0.y + g0.z + g0.w, e4m3(sc >> 8) * (g1.x + g1.y + g1.z + g1.w));
+}
+__kernel void gemvt(CODES, __global const ushort* s, XPTR x, __global float* y, int K, int N, float scale) {
+  int g = get_global_id(0), G = get_global_size(0), lr = get_local_id(0), ks = get_local_id(1), L0 = get_local_size(0);
+  int nb = K / 32, per = (nb + KS - 1) / KS, b0 = ks * per, b1 = min(nb, b0 + per);
+  float acc[MR][ROWS];
+#pragma unroll
+  for (int m = 0; m < MR; m++)
+#pragma unroll
+    for (int j = 0; j < ROWS; j++) acc[m][j] = 0;
+  for (int b = b0; b < b1; b++) {
+    uint4 q[ROWS];
+    uint sc[ROWS];
+#pragma unroll
+    for (int j = 0; j < ROWS; j++) {
+      int r = min(g + j * G, N - 1);
+      q[j] = LOADQ((size_t)b * N + r);
+      sc[j] = s[(size_t)b * N + r];
+    }
+#pragma unroll
+    for (int m = 0; m < MR; m++) {
+      XPTR xm = x + (size_t)m * K + b * 32;
+      float4 x0 = vload4(0, xm), x1 = vload4(1, xm), x2 = vload4(2, xm), x3 = vload4(3, xm);
+      float4 x4 = vload4(4, xm), x5 = vload4(5, xm), x6 = vload4(6, xm), x7 = vload4(7, xm);
+#pragma unroll
+      for (int j = 0; j < ROWS; j++) acc[m][j] += dot32(q[j], sc[j], x0, x1, x2, x3, x4, x5, x6, x7);
+    }
+  }
+  __local float red[KS][256 / KS];
+#pragma unroll
+  for (int m = 0; m < MR; m++)
+#pragma unroll
+    for (int j = 0; j < ROWS; j++) {
+      int r = g + j * G;
+      if (KS > 1) {
+        red[ks][lr] = acc[m][j];
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (ks == 0) for (int i = 1; i < KS; i++) acc[m][j] += red[i][lr];
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+      if (ks == 0 && r < N) y[(size_t)m * N + r] = acc[m][j] * scale;
+    }
 }
 
 // Prefill GEMM prototype: C[M][N] = A[M][K] . W[N][K]^T with NVFP4 W decoded once per tile into local memory.
@@ -246,6 +320,15 @@ struct Cl {
   double run(cl_kernel k, size_t global, size_t local) {
     cl_event ev;
     CK(p_clEnqueueNDRangeKernel(q, k, 1, nullptr, &global, local ? &local : nullptr, 0, nullptr, &ev));
+    return wait(ev);
+  }
+  double run2(cl_kernel k, size_t g0, size_t g1, size_t l0, size_t l1) {
+    size_t g[2] = {g0, g1}, l[2] = {l0, l1};
+    cl_event ev;
+    CK(p_clEnqueueNDRangeKernel(q, k, 2, nullptr, g, l, 0, nullptr, &ev));
+    return wait(ev);
+  }
+  double wait(cl_event ev) {
     CK(p_clWaitForEvents(1, &ev));
     cl_ulong a = 0, b = 0;
     p_clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(a), &a, nullptr);
@@ -369,6 +452,114 @@ void gemv(Cl& c) {
   }
   p_clReleaseMemObject(cb);
   p_clReleaseMemObject(sb);
+}
+
+// The k-major GEMV (gemvt) against gemv4m on Dory's four projection shapes: codes through global loads or an
+// image1d_buffer, KS work-items per row; then M = 2..16 activation rows for the fastest variant of each shape
+void gemvt(Cl& c) {
+  struct Shape { const char* name; int N, K; };
+  std::mt19937 rng(11);
+  const size_t img_max = c.num<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE);
+  const int MMAX = 16;
+  for (Shape sh : {Shape{"qkvg", 10240, 2560}, Shape{"o", 2560, 4096}, Shape{"gu", 14336, 2560}, Shape{"down", 2560, 7168}}) {
+    const int N = sh.N, K = sh.K, nb = K / 32;
+    std::vector<uint8_t> codes(size_t(N) * K / 2), scales(size_t(N) * K / 16), ct(codes.size());
+    std::vector<uint16_t> st(size_t(nb) * N);
+    for (auto& v : codes) v = uint8_t(rng());
+    for (auto& v : scales) v = uint8_t(0x30 + rng() % 16);
+    for (int b = 0; b < nb; b++)
+      for (int r = 0; r < N; r++) {
+        std::memcpy(&ct[(size_t(b) * N + r) * 16], &codes[size_t(r) * K / 2 + size_t(b) * 16], 16);
+        st[size_t(b) * N + r] = uint16_t(scales[size_t(r) * K / 16 + 2 * b] | (scales[size_t(r) * K / 16 + 2 * b + 1] << 8));
+      }
+    std::vector<float> x(size_t(MMAX) * K), y(size_t(MMAX) * N);
+    std::normal_distribution<float> nd(0.f, 0.02f);
+    for (auto& v : x) v = nd(rng);
+    const float global = 0.01f;
+    const double bytes = double(codes.size() + scales.size());
+    cl_mem cb = c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, codes.size(), codes.data());
+    cl_mem sb = c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, scales.size(), scales.data());
+    cl_mem ctb = c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, ct.size(), ct.data());
+    cl_mem stb = c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, st.size() * 2, st.data());
+    cl_mem xb = c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, x.size() * 4, x.data());
+    cl_mem yb = c.buffer(CL_MEM_WRITE_ONLY, y.size() * 4);
+    cl_mem img = nullptr;
+    if (size_t(N) * nb <= img_max) {
+      cl_image_format fmt{CL_RGBA, CL_UNSIGNED_INT32};
+      cl_image_desc desc{};
+      desc.image_type = CL_MEM_OBJECT_IMAGE1D_BUFFER;
+      desc.image_width = size_t(N) * nb;
+      desc.buffer = ctb;
+      cl_int e;
+      img = p_clCreateImage(c.ctx, CL_MEM_READ_ONLY, &fmt, &desc, nullptr, &e);
+      if (e != CL_SUCCESS) img = nullptr;
+    }
+    auto error = [&](int M) {   // rows 0 and N - 1 of every activation vector against the CPU
+      CK(p_clEnqueueReadBuffer(c.q, yb, CL_TRUE, 0, size_t(M) * N * 4, y.data(), 0, nullptr, nullptr));
+      double err = 0, ref2 = 0;
+      for (int m = 0; m < M; m++)
+        for (int n : {0, N - 1}) {
+          double r = 0;
+          for (int kk = 0; kk < K; kk++) {
+            uint8_t b = codes[size_t(n) * K / 2 + kk / 2];
+            int code = (kk & 1) ? b >> 4 : b & 15;
+            r += double(xtg::kE2m1[code]) * xtg::e4m3_to_f32(scales[size_t(n) * K / 16 + kk / 16]) * global * x[size_t(m) * K + kk];
+          }
+          err = std::max(err, std::fabs(r - y[size_t(m) * N + n]));
+          ref2 += r * r;
+        }
+      return err / std::sqrt(ref2 / (2 * M));
+    };
+    cl_kernel base = c.kernel("-DMR=1", "gemv4m");
+    c.arg(base, 0, cb); c.arg(base, 1, sb); c.arg(base, 2, xb); c.arg(base, 3, yb);
+    c.arg(base, 4, K); c.arg(base, 5, N); c.arg(base, 6, global);
+    std::vector<double> ts;
+    for (int i = 0; i < 9; i++) ts.push_back(c.run(base, size_t((N + 3) / 4) * 128, 128));
+    const double tb = median(ts);
+    std::printf("gemvt %s N=%d K=%d: gemv4m %.3f ms, %.1f GB/s, err/rms %.1e\n", sh.name, N, K, tb * 1e3, bytes / tb / 1e9,
+                error(1));
+    struct V { bool image, xconst; int rows, ks; };
+    auto label = [](V v) {
+      return std::string(v.image ? "image" : "global") + (v.xconst ? "+xconst" : "") + " rows=" + std::to_string(v.rows) +
+             " KS=" + std::to_string(v.ks);
+    };
+    auto time = [&](V v, int M) {
+      std::string opts = "-DMR=" + std::to_string(M) + " -DKS=" + std::to_string(v.ks) + " -DROWS=" + std::to_string(v.rows) +
+                         (v.image ? " -DIMG" : "") + (v.xconst ? " -DXCONST" : "");
+      cl_kernel k = c.kernel(opts, "gemvt");
+      if (v.image) c.arg(k, 0, img); else c.arg(k, 0, ctb);
+      c.arg(k, 1, stb); c.arg(k, 2, xb); c.arg(k, 3, yb); c.arg(k, 4, K); c.arg(k, 5, N); c.arg(k, 6, global);
+      const size_t l0 = std::min<size_t>(64, 256 / v.ks), fibers = size_t(N + v.rows - 1) / v.rows;
+      std::vector<double> t;
+      for (int i = 0; i < 9; i++) t.push_back(c.run2(k, (fibers + l0 - 1) / l0 * l0, size_t(v.ks), l0, size_t(v.ks)));
+      return median(t);
+    };
+    const size_t const_max = c.num<cl_ulong>(CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE);
+    double best = 1e9;
+    V bv{};
+    for (bool image : {false, true})
+      for (bool xconst : {false, true})
+        for (int rows : {1, 2, 4})
+          for (int ks : {1, 2, 4, 8}) {
+            if ((image && !img) || (xconst && size_t(K) * 4 > const_max)) continue;
+            V v{image, xconst, rows, ks};
+            double t = time(v, 1);
+            std::printf("gemvt %s %s %.3f ms, %.1f GB/s (%.2fx gemv4m), err/rms %.1e\n", sh.name, label(v).c_str(), t * 1e3,
+                        bytes / t / 1e9, tb / t, error(1));
+            if (t < best) best = t, bv = v;
+          }
+    if (!img) std::printf("gemvt %s image1d_buffer unavailable (%zu texels, max %zu)\n", sh.name, size_t(N) * nb, img_max);
+    std::printf("gemvt %s best %s %.3f ms, %.1f GB/s\n", sh.name, label(bv).c_str(), best * 1e3, bytes / best / 1e9);
+    for (int M : {2, 4, 8, 16}) {
+      V v = bv;
+      if (v.xconst && size_t(M) * K * 4 > const_max) v.xconst = false;
+      double t = time(v, M);
+      std::printf("gemvt %s %s M=%d %.3f ms (%.2fx the best M=1 time), err/rms %.1e\n", sh.name, label(v).c_str(), M,
+                  t * 1e3, t / best, error(M));
+    }
+    if (img) p_clReleaseMemObject(img);
+    for (cl_mem b : {cb, sb, ctb, stb, xb, yb}) p_clReleaseMemObject(b);
+  }
 }
 
 uint16_t to_half(float f) {   // round to nearest even, no NaN handling (the data is finite and small)
@@ -517,6 +708,7 @@ int main(int argc, char** argv) {
   if (only.empty() || only == "launch") launch(c);
   if (only.empty() || only == "read") bandwidth(c);
   if (only.empty() || only == "gemv") gemv(c);
+  if (only.empty() || only == "gemvt") gemvt(c);
   if (only.empty() || only == "gemm") gemm(c);
   if (only.empty() || only == "peak") peaks(c);
   std::printf("done\n");
