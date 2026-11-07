@@ -781,41 +781,111 @@ __kernel void kv_store(__global const float* proj, int k_off, int v_off, __globa
   }
 }
 
-// softmax(q k / sqrt(d)) v for one (row, head) per work-group of 256 (= d): keys before pos0 from the FP8 cache,
-// this call's keys from proj (FP32), causal and windowed; tiles of 256 keys with an online softmax
-__kernel void attend(__global const float* proj, int k_off, int v_off, __global const uchar* ck, __global const uchar* cv,
-                     __global const float* cks, __global const float* cvs, __global float* out, int heads, int kv_heads,
-                     int d, long pos0, int window, long slots, int ring, float sm) {
-  __local float q[256], p[256], red[256];
-  const int g = get_group_id(0), r = g / heads, h = g % heads, kvh = h / (heads / kv_heads), t = get_local_id(0);
-  const long pos = pos0 + r, lo = window > 0 ? max(0L, pos - window + 1) : 0L;
-  q[t] = proj[((size_t)r * heads + h) * d + t];
+// Prefill attention, softmax(q k / sqrt(d)) v: a work-group of 256 (= d) per (block of BR query rows, KV head) for
+// the GROUP q-heads sharing it, so every key tile serves BR x GROUP = 16 (row, head) pairs. Keys before pos0 come
+// from the FP8 cache in tiles of KT (staged in local memory as bytes), the chunk's own keys from proj in FP32;
+// causal and windowed per row, an online softmax per pair. Work-item t scores key t % KT for pairs t / KT and
+// t / KT + 8 (one FP8 decode for both), then owns output dimension t of all 16 pairs.
+#define GROUP 4
+#define BR 4
+#define KT 32
+#define PAIRS (BR * GROUP)
+// the tile's per-pair max (then sum) of v over its KT keys: pairs pg and pg + 8 are the two halves of red
+void pair_reduce(float a, float b, __local float* red, __local float* outp, int t, int j, int pg, int is_max) {
+  red[t] = a;
+  red[256 + t] = b;
   barrier(CLK_LOCAL_MEM_FENCE);
-  float m = -INFINITY, l = 0.f, acc = 0.f;
-  for (long k0 = lo; k0 <= pos; k0 += 256) {
-    const long key = k0 + t;
-    float s = -INFINITY;
-    if (key <= pos) {
-      float dot = 0.f;
-      if (key < pos0) {
+  for (int st = KT / 2; st > 0; st >>= 1) {
+    if (j < st) {
+      red[t] = is_max ? fmax(red[t], red[t + st]) : red[t] + red[t + st];
+      red[256 + t] = is_max ? fmax(red[256 + t], red[256 + t + st]) : red[256 + t] + red[256 + t + st];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  if (j == 0) {
+    outp[pg] = red[t];
+    outp[pg + 8] = red[256 + t];
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+}
+__kernel void attend_rows(__global const float* proj, int k_off, int v_off, __global const uchar* ck,
+                          __global const uchar* cv, __global const float* cks, __global const float* cvs,
+                          __global float* out, int heads, int kv_heads, int d, long pos0, int window, long slots,
+                          int ring, float sm, int m) {
+  // the running max / sum of every pair are the same in all work-items: local memory, updated by work-item i
+  __local float q[PAIRS][256], sc[PAIRS][KT], red[512], tmax[PAIRS], tsum[PAIRS], ks[KT];
+  __local float lmax[PAIRS], lsum[PAIRS], lcorr[PAIRS];
+  __local uchar kt[KT][256];
+  const int g = get_group_id(0), kvh = g % kv_heads, r0 = (g / kv_heads) * BR, t = get_local_id(0);
+  const int j = t % KT, pg = t / KT;   // the key and the pairs (pg, pg + 8) a work-item scores
+  const int nr = min(BR, m - r0);
+  for (int i = 0; i < PAIRS; i++) {   // pair i = row r0 + i / GROUP, q-head kvh * GROUP + i % GROUP
+    const int rr = r0 + i / GROUP;
+    q[i][t] = rr < m ? proj[((size_t)rr * heads + kvh * GROUP + i % GROUP) * d + t] : 0.f;
+  }
+  if (t < PAIRS) { lmax[t] = -INFINITY; lsum[t] = 0.f; }
+  // the visible keys of the two pairs scored here (lo .. pos; pos = -1 past the last row) and of the block
+  const int row0 = pg / GROUP, row1 = (pg + 8) / GROUP;
+  const long pos_a = r0 + row0 < m ? pos0 + r0 + row0 : -1, pos_b = r0 + row1 < m ? pos0 + r0 + row1 : -1;
+  const long lo_a = window > 0 ? max(0L, pos0 + r0 + row0 - window + 1) : 0L;
+  const long lo_b = window > 0 ? max(0L, pos0 + r0 + row1 - window + 1) : 0L;
+  const long first = window > 0 ? max(0L, pos0 + r0 - window + 1) : 0L, last = pos0 + r0 + nr - 1;
+  float acc[PAIRS];
+  for (int i = 0; i < PAIRS; i++) acc[i] = 0.f;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (long k0 = first; k0 <= last; k0 += KT) {
+    const int nk = (int)min((long)KT, last - k0 + 1);
+    // stage the tile's cached keys (key < pos0) as FP8 rows
+    for (int e = t; e < KT * 256 / 16; e += 256) {
+      const int kj = e / 16, part16 = (e % 16) * 16;
+      const long key = k0 + kj;
+      if (kj < nk && key < pos0) {
         const size_t idx = (size_t)(ring ? key % slots : key) * kv_heads + kvh;
-        __global const uchar* kr = ck + idx * d;
-        for (int j = 0; j < d; j++) dot += q[j] * e4m3(kr[j]);
-        dot *= cks[idx];
+        vstore16(vload16(0, ck + idx * d + part16), 0, &kt[kj][part16]);
+        if (part16 == 0) ks[kj] = cks[idx];
+      }
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    const long key = k0 + j;
+    float s0 = -INFINITY, s1 = -INFINITY;
+    if (j < nk) {
+      float dot0 = 0.f, dot1 = 0.f;
+      if (key < pos0) {
+        for (int e = 0; e < 256; e++) {
+          const float kd = e4m3(kt[j][e]);
+          dot0 += q[pg][e] * kd;
+          dot1 += q[pg + 8][e] * kd;
+        }
+        dot0 *= ks[j];
+        dot1 *= ks[j];
       } else {
         __global const float* kr = proj + k_off + ((size_t)(key - pos0) * kv_heads + kvh) * d;
-        for (int j = 0; j < d; j++) dot += q[j] * kr[j];
+        for (int e = 0; e < 256; e++) {
+          const float kd = kr[e];
+          dot0 += q[pg][e] * kd;
+          dot1 += q[pg + 8][e] * kd;
+        }
       }
-      s = dot * sm;
+      if (key >= lo_a && key <= pos_a) s0 = dot0 * sm;
+      if (key >= lo_b && key <= pos_b) s1 = dot1 * sm;
     }
-    const float mx = wg_max(s, red), m_new = fmax(m, mx), corr = m == -INFINITY ? 0.f : exp(m - m_new);
-    const float e = key <= pos ? exp(s - m_new) : 0.f;
-    p[t] = e;
-    l = l * corr + wg_sum(e, red);
-    acc *= corr;
-    const int nk = (int)min(256L, pos - k0 + 1);
-    for (int j = 0; j < nk; j++) {
-      const long kk = k0 + j;
+    pair_reduce(s0, s1, red, tmax, t, j, pg, 1);
+    const float p0 = s0 == -INFINITY ? 0.f : exp(s0 - fmax(lmax[pg], tmax[pg]));
+    const float p1 = s1 == -INFINITY ? 0.f : exp(s1 - fmax(lmax[pg + 8], tmax[pg + 8]));
+    sc[pg][j] = p0;
+    sc[pg + 8][j] = p1;
+    pair_reduce(p0, p1, red, tsum, t, j, pg, 0);
+    if (t < PAIRS) {
+      const float mn = fmax(lmax[t], tmax[t]), corr = lmax[t] == -INFINITY ? 0.f : exp(lmax[t] - mn);
+      lsum[t] = lsum[t] * corr + tsum[t];
+      lmax[t] = mn;
+      lcorr[t] = corr;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int i = 0; i < PAIRS; i++) acc[i] *= lcorr[i];
+    // work-item t = output dimension t: every key's V once, for all 16 pairs
+    for (int kj = 0; kj < nk; kj++) {
+      const long kk = k0 + kj;
       float v;
       if (kk < pos0) {
         const size_t idx = (size_t)(ring ? kk % slots : kk) * kv_heads + kvh;
@@ -823,12 +893,14 @@ __kernel void attend(__global const float* proj, int k_off, int v_off, __global 
       } else {
         v = proj[v_off + ((size_t)(kk - pos0) * kv_heads + kvh) * d + t];
       }
-      acc += p[j] * v;
+      for (int i = 0; i < PAIRS; i++) acc[i] += sc[i][kj] * v;
     }
-    m = m_new;
     barrier(CLK_LOCAL_MEM_FENCE);
   }
-  out[((size_t)r * heads + h) * d + t] = acc / l;
+  for (int i = 0; i < PAIRS; i++) {
+    const int rr = r0 + i / GROUP;
+    if (rr < m) out[((size_t)rr * heads + kvh * GROUP + i % GROUP) * d + t] = acc[i] / lsum[i];
+  }
 }
 
 // Decode (one query row) as flash-decoding: a work-group per (KV head, split of the visible keys) for the GROUP
@@ -1039,8 +1111,8 @@ void GpuDorySession::sublayer(size_t li, int m, int64_t pos0, int inst, bool sto
               v_off, K.k, K.v, K.ks, K.vs, part_, c.kv_heads, d, p0, window, slots, ring, sm, splits);
     G_.launch(G_.kernel(kDoryCl, "", "attend_merge"), {size_t(c.heads) * 256, 1}, {256, 1}, part_, att_, d, splits);
   } else {
-    G_.launch(G_.kernel(kDoryCl, "", "attend"), {size_t(m) * c.heads * 256, 1}, {256, 1}, proj_, k_off, v_off, K.k, K.v,
-              K.ks, K.vs, att_, c.heads, c.kv_heads, d, p0, window, slots, ring, sm);
+    G_.launch(G_.kernel(kDoryCl, "", "attend_rows"), {size_t((m + 3) / 4) * c.kv_heads * 256, 1}, {256, 1}, proj_, k_off,
+              v_off, K.k, K.v, K.ks, K.vs, att_, c.heads, c.kv_heads, d, p0, window, slots, ring, sm, m);
   }
   if (store)
     G_.launch(G_.kernel(kDoryCl, "", "kv_store"), {size_t(m) * c.kv_heads * size_t(d), 1}, {size_t(d), 1}, proj_, k_off,
