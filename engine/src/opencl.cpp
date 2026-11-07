@@ -137,7 +137,7 @@ struct OpenClBackend::Impl {
       X(clGetProgramBuildInfo) X(clCreateKernel) X(clCreateBuffer) X(clSetKernelArg) X(clEnqueueNDRangeKernel) \
           X(clEnqueueWriteBuffer) X(clEnqueueReadBuffer) X(clFinish) X(clReleaseMemObject) X(clReleaseKernel)  \
               X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext)
-#define DECL(n) decltype(&n) n = nullptr;
+#define DECL(n) decltype(&::n) n = nullptr;
   API(DECL)
 #undef DECL
   void* lib = nullptr;
