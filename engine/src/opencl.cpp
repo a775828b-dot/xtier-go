@@ -137,13 +137,37 @@ struct OpenClBackend::Impl {
   X(clGetDeviceInfo) X(clCreateContext) X(clCreateCommandQueue) X(clCreateProgramWithSource) X(clBuildProgram) \
       X(clGetProgramBuildInfo) X(clCreateKernel) X(clCreateBuffer) X(clSetKernelArg) X(clEnqueueNDRangeKernel) \
           X(clEnqueueWriteBuffer) X(clEnqueueReadBuffer) X(clFinish) X(clReleaseMemObject) X(clReleaseKernel)  \
-              X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext) X(clEnqueueCopyBuffer)
+              X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext) X(clEnqueueCopyBuffer) \
+                  X(clGetEventProfilingInfo) X(clReleaseEvent) X(clGetKernelInfo)
 #define DECL(n) decltype(&::n) n = nullptr;
   API(DECL)
 #undef DECL
   // the device-resident path's programs (by source and options) and kernels (by program and name)
   std::map<std::pair<const char*, std::string>, cl_program> programs;
   std::map<std::pair<cl_program, std::string>, cl_kernel> kernels;
+  // XTG_GPU_PROFILE: every kernel gets an event; finish() adds their device times up per kernel name
+  bool profiling = false;
+  std::vector<std::pair<cl_kernel, cl_event>> events;
+  std::map<std::string, std::pair<double, size_t>> kernel_time;   // name -> seconds, launches
+  cl_event* event_for(cl_kernel k) {
+    if (!profiling) return nullptr;
+    events.push_back({k, nullptr});
+    return &events.back().second;
+  }
+  void collect() {
+    for (auto& [k, ev] : events) {
+      cl_ulong a = 0, b = 0;
+      clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(a), &a, nullptr);
+      clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(b), &b, nullptr);
+      char n[64] = {};
+      clGetKernelInfo(k, CL_KERNEL_FUNCTION_NAME, sizeof(n) - 1, n, nullptr);
+      auto& t = kernel_time[n];
+      t.first += double(b - a) * 1e-9;
+      t.second++;
+      clReleaseEvent(ev);
+    }
+    events.clear();
+  }
   void* lib = nullptr;
   cl_device_id device = nullptr;
   cl_context context = nullptr;
@@ -165,6 +189,15 @@ struct OpenClBackend::Impl {
       log("GPU decode: NVFP4 %.6fs/%zu calls, BF16 %.6fs/%zu calls", decode_nv_s, decode_nv_calls, decode_bf_s,
           decode_bf_calls);
     if (queue) clFinish(queue);
+    if (profiling) {
+      collect();
+      double total = 0;
+      for (auto& [n, t] : kernel_time) total += t.first;
+      for (auto& [n, t] : kernel_time)
+        log("GPU kernel %-12s %9.3f ms %7zu launches %5.1f%%", n.c_str(), t.first * 1e3, t.second,
+            total > 0 ? 100 * t.first / total : 0.0);
+      if (total > 0) log("GPU kernels total %.3f ms", total * 1e3);
+    }
     for (auto& [key, w] : weights) {
       if (w.codes) clReleaseMemObject(w.codes);
       if (w.scales) clReleaseMemObject(w.scales);
@@ -206,7 +239,8 @@ struct OpenClBackend::Impl {
     using SetPerfHint = cl_int (*)(cl_context, cl_uint);
     auto perf = reinterpret_cast<SetPerfHint>(dlsym(lib, "clSetPerfHintQCOM"));
     if (perf) log("OpenCL high performance hint: %d", perf(context, 0x40C3));
-    queue = clCreateCommandQueue(context, device, 0, &e);
+    profiling = std::getenv("XTG_GPU_PROFILE") != nullptr;
+    queue = clCreateCommandQueue(context, device, profiling ? CL_QUEUE_PROFILING_ENABLE : 0, &e);
     check(e, "queue");
     program = clCreateProgramWithSource(context, 1, &source, nullptr, &e);
     check(e, "program");
@@ -256,7 +290,7 @@ struct OpenClBackend::Impl {
       local[0] = 128;
       global[0] = size_t((n + 3) / 4) * 128;
     }
-    check(clEnqueueNDRangeKernel(queue, k, m == 1 ? 1 : 2, nullptr, global, local, 0, nullptr, nullptr), "dispatch");
+    check(clEnqueueNDRangeKernel(queue, k, m == 1 ? 1 : 2, nullptr, global, local, 0, nullptr, event_for(k)), "dispatch");
   }
 };
 
@@ -409,7 +443,10 @@ void OpenClBackend::copy(Mem src, size_t src_offset, Mem dst, size_t dst_offset,
   if (bytes)
     check(impl_->clEnqueueCopyBuffer(impl_->queue, src, dst, src_offset, dst_offset, bytes, 0, nullptr, nullptr), "copy");
 }
-void OpenClBackend::finish() { check(impl_->clFinish(impl_->queue), "finish"); }
+void OpenClBackend::finish() {
+  check(impl_->clFinish(impl_->queue), "finish");
+  if (impl_->profiling) impl_->collect();
+}
 
 OpenClBackend::Kernel OpenClBackend::kernel(const char* source, const std::string& options, const char* name) {
   auto& p = *impl_;
@@ -442,7 +479,7 @@ void OpenClBackend::set_arg(Kernel k, unsigned index, size_t size, const void* v
 void OpenClBackend::enqueue(Kernel k, Range global, Range local) {
   size_t g[2] = {global[0], global[1]}, l[2] = {local[0], local[1]};
   for (int i = 0; i < 2; ++i) g[i] = (g[i] + l[i] - 1) / l[i] * l[i];
-  check(impl_->clEnqueueNDRangeKernel(impl_->queue, k, 2, nullptr, g, l, 0, nullptr, nullptr), "dispatch");
+  check(impl_->clEnqueueNDRangeKernel(impl_->queue, k, 2, nullptr, g, l, 0, nullptr, impl_->event_for(k)), "dispatch");
 }
 
 void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, Mem x, int m, Mem y, size_t y_offset) {

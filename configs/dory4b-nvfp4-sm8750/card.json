@@ -48,9 +48,10 @@
      "hint": "截断时用户每发一条新消息，之前各轮的思考被删掉，前缀缓存从那里断开、要重算"},
     {"key": "threads", "target": "launch", "label": "CPU 线程", "default": "8",
      "choices": [["8", "8 · 2 大核 + 6 中核"], ["6", "6"], ["4", "4"]]},
-    {"key": "backend", "target": "launch", "label": "计算后端", "default": "cpu",
-     "choices": [["cpu", "CPU · NEON"], ["gpu", "GPU · Adreno"], ["npu", "NPU · Hexagon"]],
-     "unavailable": {"gpu": "还没做（计划第 4 阶段）", "npu": "还没做（计划第 4 阶段）"}}
+    {"key": "backend", "target": "option", "label": "计算后端", "default": "cpu",
+     "choices": [["cpu", "CPU · NEON"], ["gpu", "GPU · Adreno（实验：整步在 GPU）"], ["gpu-linear", "GPU 线性层 + CPU（对照）"], ["npu", "NPU · Hexagon"]],
+     "hint": "GPU 两项还没过真机验收，默认仍是 CPU",
+     "unavailable": {"npu": "还没做：先摸底（tools/npu_probe）"}}
   ],
   "notes": [
     {"when": {"kv_dtype": "fp8"}, "text": "FP8 KV：服务器文本NLL比BF16高0.1–0.2%；Y900短请求与接口通过，完整精度和长上下文仍待验收"},
