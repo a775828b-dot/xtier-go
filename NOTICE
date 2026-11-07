@@ -1,0 +1,14 @@
+XTier Go
+Copyright 2026 the XTier Go authors
+
+This product includes third-party code under third_party/:
+
+- nlohmann/json 3.12.0 (MIT), https://github.com/nlohmann/json, third_party/nlohmann/LICENSE.MIT
+- cpp-httplib 0.65.0 (MIT), https://github.com/yhirose/cpp-httplib, third_party/httplib/LICENSE
+- minja 021c2293c187789ef13d56c6cfd89c9b134fd80f (MIT), https://github.com/google/minja, third_party/minja/LICENSE
+
+The Dory model pack (packs/dory) and the reference implementation (reference/dory_ref.py) follow the Dory model of
+vLLM (https://github.com/vllm-project/vllm, Apache-2.0, vllm/model_executor/models/dory.py, contributed by NVIDIA).
+
+Model weights are not part of this repository; NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4 is distributed by NVIDIA under
+the OpenMDW License Agreement.

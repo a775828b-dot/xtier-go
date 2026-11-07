@@ -1,0 +1,62 @@
+{
+  "id": "dory4b",
+  "order": 10,
+  "name": "Nemotron-Labs Dory 1.0 4B",
+  "code": "DORY-4B-NVFP4",
+  "port": 18400,
+  "served": "dory",
+  "spec": "",
+  "arch": "72 子层：8 输入块 · 20 循环块 × N · 8 输出块 · 滑窗 1024 + 全局注意力 · nGPT · NVFP4 W4A16",
+  "hardware": "Snapdragon 8 Elite (SM8750) · 16 GB · Android 16",
+  "ready_timeout": 600,
+  "model": {
+    "repo": "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4",
+    "revision": "64b4039a3468bef85c6744c1e24d5a80801fe965",
+    "dir": "NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4",
+    "mirrors": ["https://hf-mirror.com", "https://huggingface.co"],
+    "files": [
+      {"name": "config.json", "size": 2753},
+      {"name": "generation_config.json", "size": 225},
+      {"name": "chat_template.jinja", "size": 10152},
+      {"name": "tokenizer_config.json", "size": 177209},
+      {"name": "special_tokens_map.json", "size": 563},
+      {"name": "tokenizer.json", "size": 17077484, "sha256": "623c34567aebb18582765289fbe23d901c62704d6518d71866e0e58db892b5b7"},
+      {"name": "model.safetensors", "size": 3202498032, "sha256": "ca08dec5d70b653c03e57903dd33725ec8cc80133c53a1bd9c83f99dd03f3e46"}
+    ]
+  },
+  "bench": {"kind": "agent", "dec": "--", "pre": "--", "title": "还没在安卓上实测；服务器 x86 上的正确性对照见 docs/reports/2026-11-07-host-bringup.md"},
+  "options": [
+    {"key": "loops", "target": "option", "label": "循环次数", "default": "2",
+     "choices": [["2", "2 · 模型卡推荐"], ["1", "1 · 最快"], ["3", "3"], ["4", "4 · 最准、最慢"]],
+     "hint": "循环块每多跑一次，decode 每 token 多读约 1 GiB 权重：按带宽估算 4 次约为 2 次的 0.6 倍速度"},
+    {"key": "context", "target": "option", "label": "上下文 / KV 容量", "default": "131072",
+     "choices": [["131072", "128K"], ["262144", "256K"], ["65536", "64K"], ["32768", "32K"]],
+     "hint": "按需占内存：KV 随上下文增长才变成常驻内存；放不下的按可用内存灰掉"},
+    {"key": "kv_mode", "target": "option", "label": "循环层 KV", "default": "last_loop",
+     "choices": [["last_loop", "last_loop · 只存最后一轮"], ["per_loop", "per_loop · 每轮一份（vLLM 默认）"]],
+     "hint": "2 次循环时 last_loop 的 KV 比 per_loop 少 36%（全局层 9 份对 14 份）；结果与 per_loop 略有不同"},
+    {"key": "kv_dtype", "target": "option", "label": "KV 精度", "default": "fp8",
+     "choices": [["fp8", "FP8"]],
+     "hint": "KV 一律 FP8（每个位置每个头一个缩放）：128K 时 last_loop 常驻约 4.9 GiB，BF16 要 7.3 GiB；BF16 只留给服务器上的精度对照"},
+    {"key": "effort", "target": "kwarg", "kwarg": "medium_effort", "label": "思考力度", "default": "default",
+     "choices": [["default", "默认"], ["efficient", "efficient · 少想一些"]],
+     "map": {"default": false, "efficient": true},
+     "hint": "efficient：模板在最后一条用户消息后加 {reasoning effort: efficient}；手机上少生成思考 token 最直接"},
+    {"key": "history_thinking", "target": "kwarg", "kwarg": "truncate_history_thinking", "label": "历史思考", "default": "truncate",
+     "choices": [["truncate", "截断 · 官方模板默认"], ["keep", "保留 · 前缀缓存不断"]],
+     "map": {"truncate": true, "keep": false},
+     "hint": "截断时用户每发一条新消息，之前各轮的思考被删掉，前缀缓存从那里断开、要重算"},
+    {"key": "threads", "target": "launch", "label": "CPU 线程", "default": "8",
+     "choices": [["8", "8 · 2 大核 + 6 中核"], ["6", "6"], ["4", "4"]]},
+    {"key": "backend", "target": "launch", "label": "计算后端", "default": "cpu",
+     "choices": [["cpu", "CPU · NEON"], ["gpu", "GPU · Adreno"], ["npu", "NPU · Hexagon"]],
+     "unavailable": {"gpu": "还没做（计划第 4 阶段）", "npu": "还没做（计划第 4 阶段）"}}
+  ],
+  "notes": [
+    {"when": {"kv_dtype": "fp8"}, "text": "FP8 KV：服务器上文本 NLL 比 BF16 高 0.1–0.2%，带工具定义的提示偏差更大；未在安卓上实测"},
+    {"when": {"kv_mode": "per_loop", "context": "262144"}, "text": "per_loop + 256K：常驻约 9.8 GiB，这台机器放不下", "warn": true},
+    {"when": {"context": "262144"}, "text": "256K：手机 CPU 上冷 prefill 要按小时计，要靠前缀缓存一轮一轮长上去", "warn": true},
+    {"when": {"history_thinking": "keep"}, "text": "保留历史思考：前缀缓存不断，但上下文涨得更快；与官方模板的默认不同"},
+    {"when": {"loops": "4"}, "text": "4 次循环：模型卡上 SWE-bench 59.5 → 61.8，decode 约慢 40%"}
+  ]
+}

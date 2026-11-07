@@ -1,0 +1,16 @@
+build*/
+__pycache__/
+*.pyc
+*.f32
+results/
+# Android / Gradle
+app/.gradle/
+app/build/
+app/app/build/
+app/app/.cxx/
+app/local.properties
+app/gradle/
+app/gradlew
+app/gradlew.bat
+.idea/
+*.iml
