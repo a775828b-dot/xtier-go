@@ -132,6 +132,20 @@ class LauncherModel(private val app: Context) {
         log(if (r.isSuccess) "前缀缓存已清" else "清缓存失败：${r.exceptionOrNull()?.message}")
     }
 
+    val npuTools = NpuProbe.available(app)
+    var npuChecking by mutableStateOf(false)
+        private set
+
+    /** NpuProbe from this process; every line goes to the log, the report to npu/selftest.txt. */
+    suspend fun npuSelfTest() {
+        if (npuChecking) return
+        npuChecking = true
+        log("NPU 自检 · 开始（${NpuProbe.dir(app).path}）")
+        val lines = withContext(Dispatchers.IO) { runCatching { NpuProbe.run(app) } }
+        lines.getOrNull()?.forEach { log("NPU · $it") } ?: log("NPU 自检失败：${lines.exceptionOrNull()?.message}")
+        npuChecking = false
+    }
+
     data class Bench(val label: String, val repeat: Int, val maxTokens: Int)
 
     companion object {

@@ -59,6 +59,27 @@ CI 的 `android-app` 任务每次推送都编一份 debug APK（artifact `xtier-
 模型文件放 `Android/data/io.github.a775828b.xtiergo/files/models/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4/`：启动台里可以从
 hf-mirror / huggingface 直连下载（域名经 223.5.5.5 解析、不走代理，8 连接分段、断点续传、下完校验 sha256），也可以 `adb push` 进去。
 
+### 带 QNN 的开发版（NPU 自检）
+
+`-PxtgQnnLibs=DIR` 把 `DIR/arm64-v8a/` 一起打进 APK，并在安装时解出原生库，这样 App 才能执行其中两个程序。目录里放 QNN SDK
+（QAIRT 2.47）的这些文件：
+
+- `lib/aarch64-android/` 下的 `libQnnHtp.so`、`libQnnHtpV79Stub.so`、`libQnnSystem.so`、`libQnnHtpProfilingReader.so`；
+- `lib/hexagon-v79/unsigned/` 下的 `libQnnHtpV79Skel.so`、`libQnnHtpV79.so`；
+- `bin/aarch64-android/` 下的 `qnn-net-run`、`qnn-profile-viewer`，分别改名成 `libqnn_net_run.so`、`libqnn_profile_viewer.so`。
+
+SDK 不在仓库里，这个选项只用于本地构建。
+
+```bash
+gradle assembleDebug -PxtgAppIdSuffix=.dev -PxtgQnnLibs=/path/to/qnn-jnilibs
+# 上下文二进制（*_m<M>.bin）、list_m<M>.txt 和 inputs/ 放进 App 的 files/npu/（tools/npu_probe 的 kit 里有）
+adb shell am start -n io.github.a775828b.xtiergo.dev/io.github.a775828b.xtiergo.MainActivity --ez npu_selftest true
+adb shell cat /sdcard/Android/data/io.github.a775828b.xtiergo.dev/files/npu/selftest.txt
+```
+
+DEV 面板的「NPU 自检」按钮做的是同一件事。App 自己打不开 /dev/fastrpc-cdsp，这是正常的：libcdsprpc.so 会经 vendor 的
+dspservice 拿设备。见[摸底报告](reports/2026-11-07-y900-npu-gpu-probe.md#n0app-进程里的-npu11-07-夜)。
+
 ### 本地构建与真机回归
 
 已有其他 NDK 时可用 `-PxtgNdkVersion=28.2.13676358` 覆盖；未指定仍使用原来的 27.2.12479018。

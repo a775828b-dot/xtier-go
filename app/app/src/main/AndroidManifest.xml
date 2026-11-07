@@ -19,6 +19,8 @@
         android:theme="@style/Theme.XTierGo">
 
         <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <!-- FastRPC to the Hexagon NPU (QNN HTP); apps reach this vendor library only when they declare it -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
 
         <activity
             android:name=".MainActivity"

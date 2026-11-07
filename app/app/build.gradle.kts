@@ -4,6 +4,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// -PxtgQnnLibs=DIR: also pack DIR/arm64-v8a (the QNN SDK's HTP libraries, and qnn-net-run / qnn-profile-viewer
+// renamed libqnn_net_run.so / libqnn_profile_viewer.so) for the NPU check in DEV, with the libraries extracted on
+// install so those two can run. A local build only: the SDK is not in this repository.
+val qnnLibs: String? = providers.gradleProperty("xtgQnnLibs").orNull
+
 android {
     namespace = "io.github.a775828b.xtiergo"
     compileSdk = 35
@@ -45,6 +50,7 @@ android {
 
     // the model cards come straight from configs/ (one source for the cards)
     sourceSets["main"].assets.srcDirs("../../configs")
+    if (qnnLibs != null) sourceSets["main"].jniLibs.srcDir(qnnLibs)
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -52,7 +58,7 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    packaging { jniLibs { useLegacyPackaging = false } }
+    packaging { jniLibs { useLegacyPackaging = qnnLibs != null } }
 }
 
 dependencies {

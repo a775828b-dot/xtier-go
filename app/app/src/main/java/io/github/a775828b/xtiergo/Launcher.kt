@@ -366,7 +366,9 @@ private fun ColumnScope.DevTools(m: LauncherModel, online: Boolean, scope: kotli
         for (b in LauncherModel.BENCHES)
             XtButton("测速 · ${b.label}", enabled = online && !m.benching, small = true) { scope.launch { m.bench(b) } }
         XtButton("清前缀缓存", enabled = online && !m.benching, small = true) { scope.launch { m.flushCache() } }
+        XtButton("NPU 自检", enabled = m.npuTools && !m.npuChecking, small = true) { scope.launch { m.npuSelfTest() } }
     }
     Spacer(Modifier.height(4.dp))
     Dim("测速：固定提示、温度 0、关思考、先清前缀缓存；结果写进上面的日志", 10.5.sp)
+    Dim("NPU 自检：用 App 进程跑 npu/ 里的上下文二进制（要带 QNN 的开发版，见 NpuProbe.kt）", 10.5.sp)
 }

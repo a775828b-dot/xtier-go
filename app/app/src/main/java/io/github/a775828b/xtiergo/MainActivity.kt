@@ -1,6 +1,7 @@
 package io.github.a775828b.xtiergo
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
@@ -9,6 +10,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -20,7 +23,20 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        val model = LauncherModel(applicationContext)
+        model = LauncherModel(applicationContext)
         setContent { XTierTheme { Launcher(model) } }
+        selfTest(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        selfTest(intent)
+    }
+
+    private lateinit var model: LauncherModel
+
+    // adb: am start -n <package>/io.github.a775828b.xtiergo.MainActivity --ez npu_selftest true
+    private fun selfTest(intent: Intent?) {
+        if (intent?.getBooleanExtra("npu_selftest", false) == true) lifecycleScope.launch { model.npuSelfTest() }
     }
 }
