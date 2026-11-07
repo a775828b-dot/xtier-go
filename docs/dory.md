@@ -67,6 +67,22 @@ decode 每个 token 要读一遍权重和 KV。按 60 GB/s 的有效带宽（8 E
 （BF16 KV、per_loop；last_loop 和 FP8 读得更少。）prefill 受算力限制，2 次循环每 token 约 10.3 GFLOP；128K 以上的注意力是
 平方级，冷 prefill 在手机 CPU 上要按小时计，靠前缀缓存一轮一轮长上去。
 
+## GPU 预算（Y900 的 Adreno 830，2026-11-07 实测）
+
+全程持有 8 GiB 共享缓冲区时：复制读写合计 66.2 GB/s、Triad 67.5 GB/s、FP16 MAD 5.97 TFLOP/s、FP32 MAD 3.17 TFLOP/s、
+简单 FP32 分块矩阵乘约 450 GFLOP/s；驱动报全局 7.5 GiB、单块上限 1 GiB。还没有 GPU 后端，下面是按这些数和模型的
+字节 / 算力估的：
+
+| 项 | 128K | 256K |
+|---|---:|---:|
+| 显存（last_loop + FP8：权重 2.36 + KV 与快照 + 工作区） | 约 5.1 GiB | 约 7.4 GiB |
+| decode 上限（66 GB/s，4K / 32K / 128K 上下文） | 17.5 / 14.3 / 8.8 tok/s | — |
+| prefill 估计（W4A16 FP16 矩阵乘 1.5–3 TFLOP/s，4K / 32K / 128K 处） | 125–250 / 80–160 / 35–75 tok/s | — |
+
+按 8 GiB 的显存预算，128K 和 256K（last_loop + FP8）都放得下；单块 1 GiB 也够（最大的张量 lm_head 0.63 GiB，256K 时每个
+全局层 KV 512 MiB）。前提是权重 CPU / GPU 共用一份（统一内存，mmap 的页直接做缓冲区）。decode 受带宽限制，CPU 和 GPU 共用
+同一组内存，GPU 快不了多少；prefill 受算力限制，GPU 约快 3 倍，所以先做 GPU prefill（q·k 要 FP32 累加，见下一节）。
+
 ## 精度注意：注意力很尖
 
 nGPT 的 q 缩放（`(sqk·√d/σ)²`，σ = 0.0177）让注意力分数到几百。服务器上对照时，一个带工具定义的提示里第 103 个位置的
