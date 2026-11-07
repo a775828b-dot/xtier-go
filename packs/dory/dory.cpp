@@ -306,6 +306,8 @@ class GpuDorySession : public Session {
   std::vector<Snap> snaps_;
   Mem x_ = nullptr, input_ = nullptr, state_ = nullptr, proj_ = nullptr, att_ = nullptr, gu_ = nullptr, o_ = nullptr;
   Mem rope_[3] = {nullptr, nullptr, nullptr}, hx_ = nullptr, logits_dev_ = nullptr;
+  Mem part_ = nullptr;   // decode attention partials [kv head][split][group head][max, sum, d outputs]
+  static constexpr int kMaxSplits = 64;
   std::vector<float> host_, logits_;
 };
 
@@ -828,12 +830,124 @@ __kernel void attend(__global const float* proj, int k_off, int v_off, __global 
   }
   out[((size_t)r * heads + h) * d + t] = acc / l;
 }
+
+// Decode (one query row) as flash-decoding: a work-group per (KV head, split of the visible keys) for the GROUP
+// q-heads sharing that KV head; FP8 K tiles staged in local memory, V read once per key for all GROUP heads;
+// partial (max, sum, output) per q-head into part, attend_merge combines the splits. d = 256, 256 work-items.
+#define GROUP 4
+#define TILE 64
+__kernel void attend_split(__global const float* proj, int k_off, int v_off, __global const uchar* ck,
+                           __global const uchar* cv, __global const float* cks, __global const float* cvs,
+                           __global float* part, int kv_heads, int d, long pos0, int window, long slots, int ring,
+                           float sm, int splits) {
+  __local float q[GROUP][256], sc[GROUP][TILE], red[256], tmax[GROUP], tsum[GROUP];
+  __local uchar kt[TILE][256];
+  __local float ks[TILE];
+  const int g = get_group_id(0), kvh = g / splits, sp = g % splits, t = get_local_id(0);
+  const int hi = t / TILE, j = t % TILE;   // the (head, key) a work-item scores
+  const long lo = window > 0 ? max(0L, pos0 - window + 1) : 0L, span = pos0 - lo + 1;
+  const long s0 = lo + span * sp / splits, s1 = lo + span * (sp + 1) / splits;
+  for (int i = 0; i < GROUP; i++) q[i][t] = proj[(size_t)(kvh * GROUP + i) * d + t];
+  float m[GROUP], l[GROUP], acc[GROUP];
+  for (int i = 0; i < GROUP; i++) { m[i] = -INFINITY; l[i] = 0.f; acc[i] = 0.f; }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (long k0 = s0; k0 < s1; k0 += TILE) {
+    const int nk = (int)min((long)TILE, s1 - k0);
+    // stage the tile's keys: cached ones as FP8 rows, the current token (pos0, only in the last split) from proj
+    for (int e = t; e < TILE * 256 / 16; e += 256) {
+      const int kj = e / 16, part16 = (e % 16) * 16;
+      const long key = k0 + kj;
+      if (kj < nk && key < pos0) {
+        const size_t idx = (size_t)(ring ? key % slots : key) * kv_heads + kvh;
+        vstore16(vload16(0, ck + idx * d + part16), 0, &kt[kj][part16]);
+        if (part16 == 0) ks[kj] = cks[idx];
+      }
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    float s = -INFINITY;
+    if (j < nk) {
+      const long key = k0 + j;
+      float dot = 0.f;
+      if (key < pos0) {
+        for (int e = 0; e < 256; e++) dot += q[hi][e] * e4m3(kt[j][e]);
+        dot *= ks[j];
+      } else {
+        __global const float* kr = proj + k_off + (size_t)kvh * d;
+        for (int e = 0; e < 256; e++) dot += q[hi][e] * kr[e];
+      }
+      s = dot * sm;
+    }
+    // per head: the tile's max and sum over its TILE work-items
+    red[t] = s;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int st = TILE / 2; st > 0; st >>= 1) {
+      if (j < st) red[t] = fmax(red[t], red[t + st]);
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (j == 0) tmax[hi] = red[t];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    const float m_new = fmax(m[hi], tmax[hi]);
+    const float p = j < nk ? exp(s - m_new) : 0.f;
+    sc[hi][j] = p;
+    red[t] = p;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int st = TILE / 2; st > 0; st >>= 1) {
+      if (j < st) red[t] += red[t + st];
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (j == 0) tsum[hi] = red[t];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    float corr[GROUP];
+    for (int i = 0; i < GROUP; i++) {
+      const float mn = fmax(m[i], tmax[i]);
+      corr[i] = m[i] == -INFINITY ? 0.f : exp(m[i] - mn);
+      l[i] = l[i] * corr[i] + tsum[i];
+      acc[i] *= corr[i];
+      m[i] = mn;
+    }
+    // work-item t = output dimension t: every key's V once, for all GROUP heads
+    for (int kj = 0; kj < nk; kj++) {
+      const long key = k0 + kj;
+      float v;
+      if (key < pos0) {
+        const size_t idx = (size_t)(ring ? key % slots : key) * kv_heads + kvh;
+        v = e4m3(cv[idx * d + t]) * cvs[idx];
+      } else {
+        v = proj[v_off + (size_t)kvh * d + t];
+      }
+      for (int i = 0; i < GROUP; i++) acc[i] += sc[i][kj] * v;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  for (int i = 0; i < GROUP; i++) {
+    __global float* o = part + ((size_t)(kvh * splits + sp) * GROUP + i) * (2 + d);
+    if (t == 0) { o[0] = m[i]; o[1] = l[i]; }
+    o[2 + t] = acc[i];
+  }
+}
+
+// one work-group per q-head: the splits' partial softmax outputs into the attention output row
+__kernel void attend_merge(__global const float* part, __global float* out, int d, int splits) {
+  const int h = get_group_id(0), kvh = h / GROUP, i = h % GROUP, t = get_local_id(0);
+  float M = -INFINITY;
+  for (int s = 0; s < splits; s++) M = fmax(M, part[((size_t)(kvh * splits + s) * GROUP + i) * (2 + d)]);
+  float L = 0.f, acc = 0.f;
+  for (int s = 0; s < splits; s++) {
+    __global const float* p = part + ((size_t)(kvh * splits + s) * GROUP + i) * (2 + d);
+    if (p[0] == -INFINITY) continue;
+    const float w = exp(p[0] - M);
+    L += p[1] * w;
+    acc += p[2 + t] * w;
+  }
+  out[(size_t)h * d + t] = acc / L;
+}
 )CLC";
 
 GpuDorySession::GpuDorySession(DoryModel& m) : M_(m), G_(*m.gpu) {
   const Config& c = m.c;
   XTG_CHECK(m.o.kv_dtype == KvDtype::FP8, "backend=gpu keeps an FP8 KV cache (kv_dtype=fp8)");
-  XTG_CHECK(c.head_dim == 256 && c.hidden % 256 == 0, "backend=gpu: kernels written for head_dim 256");
+  XTG_CHECK(c.head_dim == 256 && c.hidden % 256 == 0 && c.heads == 4 * c.kv_heads,
+            "backend=gpu: kernels written for head_dim 256 and 4 query heads per KV head");
   const size_t ch = size_t(m.o.chunk), H = size_t(c.hidden), Q = size_t(c.heads) * size_t(c.head_dim),
                KV = size_t(c.kv_heads) * size_t(c.head_dim), F = size_t(c.ffn), half = size_t(c.head_dim) / 2;
   for (const Layer& L : m.layers) {
@@ -871,6 +985,7 @@ GpuDorySession::GpuDorySession(DoryModel& m) : M_(m), G_(*m.gpu) {
   for (int kind : {int(kSliding), int(kFull)}) rope_[kind] = G_.alloc(ch * 2 * half * 4);
   hx_ = G_.alloc(16 * H * 4);
   logits_dev_ = G_.alloc(16 * size_t(c.vocab) * 4);
+  part_ = G_.alloc(size_t(c.kv_heads) * kMaxSplits * size_t(c.heads / c.kv_heads) * (2 + size_t(c.head_dim)) * 4);
 }
 
 GpuDorySession::~GpuDorySession() {
@@ -884,7 +999,7 @@ GpuDorySession::~GpuDorySession() {
     for (auto& k : s.rings) drop(k);
   for (auto& v : vecs_)
     for (Mem b : {v.lr, v.qscale, v.gscale, v.sg, v.su}) G_.release(b);
-  for (Mem b : {x_, input_, state_, proj_, att_, gu_, o_, rope_[kSliding], rope_[kFull], hx_, logits_dev_}) G_.release(b);
+  for (Mem b : {x_, input_, state_, proj_, att_, gu_, o_, rope_[kSliding], rope_[kFull], hx_, logits_dev_, part_}) G_.release(b);
 }
 
 OpenClBackend::Mem GpuDorySession::upload(const std::vector<float>& v) {
@@ -918,8 +1033,16 @@ void GpuDorySession::sublayer(size_t li, int m, int64_t pos0, int inst, bool sto
   const int64_t p0 = pos0, slots = K.slots;   // OpenCL long
   const int ring = K.ring ? 1 : 0, window = L.window;
   const float sm = 1.f / std::sqrt(float(d));
-  G_.launch(G_.kernel(kDoryCl, "", "attend"), {size_t(m) * c.heads * 256, 1}, {256, 1}, proj_, k_off, v_off, K.k, K.v, K.ks,
-            K.vs, att_, c.heads, c.kv_heads, d, p0, window, slots, ring, sm);
+  if (m == 1) {   // decode: splits of up to 256 visible keys, at most kMaxSplits
+    const int64_t span = window > 0 ? std::min<int64_t>(pos0 + 1, window) : pos0 + 1;
+    const int splits = int(std::clamp<int64_t>((span + 255) / 256, 1, kMaxSplits));
+    G_.launch(G_.kernel(kDoryCl, "", "attend_split"), {size_t(c.kv_heads) * size_t(splits) * 256, 1}, {256, 1}, proj_, k_off,
+              v_off, K.k, K.v, K.ks, K.vs, part_, c.kv_heads, d, p0, window, slots, ring, sm, splits);
+    G_.launch(G_.kernel(kDoryCl, "", "attend_merge"), {size_t(c.heads) * 256, 1}, {256, 1}, part_, att_, d, splits);
+  } else {
+    G_.launch(G_.kernel(kDoryCl, "", "attend"), {size_t(m) * c.heads * 256, 1}, {256, 1}, proj_, k_off, v_off, K.k, K.v,
+              K.ks, K.vs, att_, c.heads, c.kv_heads, d, p0, window, slots, ring, sm);
+  }
   if (store)
     G_.launch(G_.kernel(kDoryCl, "", "kv_store"), {size_t(m) * c.kv_heads * size_t(d), 1}, {size_t(d), 1}, proj_, k_off,
               v_off, K.k, K.v, K.ks, K.vs, p0, m, c.kv_heads, d, slots, ring);
