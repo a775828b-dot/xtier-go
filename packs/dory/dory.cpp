@@ -783,120 +783,142 @@ __kernel void kv_store(__global const float* proj, int k_off, int v_off, __globa
 
 // Prefill attention, softmax(q k / sqrt(d)) v: a work-group of 256 (= d) per (block of BR query rows, KV head) for
 // the GROUP q-heads sharing it, so every key tile serves BR x GROUP = 16 (row, head) pairs. Keys before pos0 come
-// from the FP8 cache in tiles of KT (staged in local memory as bytes), the chunk's own keys from proj in FP32;
-// causal and windowed per row, an online softmax per pair. Work-item t scores key t % KT for pairs t / KT and
-// t / KT + 8 (one FP8 decode for both), then owns output dimension t of all 16 pairs.
+// from the FP8 cache in tiles of KT, decoded once into local memory as half (exact for E4M3), the chunk's own keys
+// from proj in FP32; causal and windowed per row, an online softmax per pair. Work-item t scores key t % KT for
+// pair t / KT (q . k in FP32, in order); the 16 work-items of a pair are consecutive, so the tile's max and sum are
+// subgroup shuffles where the device has them. Then work-item t owns output dimension t of all 16 pairs, with the
+// tile's V values loaded at its start. Local rows are padded to 260 so a wave's reads fall in different banks.
 #define GROUP 4
 #define BR 4
-#define KT 32
+#define KT 16
 #define PAIRS (BR * GROUP)
-// the tile's per-pair max (then sum) of v over its KT keys: pairs pg and pg + 8 are the two halves of red
-void pair_reduce(float a, float b, __local float* red, __local float* outp, int t, int j, int pg, int is_max) {
-  red[t] = a;
-  red[256 + t] = b;
+#define QS 260
+#define KS 260
+#if defined(cl_khr_subgroup_shuffle)
+#pragma OPENCL EXTENSION cl_khr_subgroups : enable
+#pragma OPENCL EXTENSION cl_khr_subgroup_shuffle : enable
+#endif
+// the max (is_max) or sum of v over the KT consecutive work-items of a pair, in all of them
+float pair_reduce(float v, int is_max, __local float* red, int t, int j) {
+#if defined(cl_khr_subgroup_shuffle)
+  if (get_sub_group_size() >= KT) {   // the same in every work-item of the work-group
+    for (int st = KT / 2; st > 0; st >>= 1) {
+      const float o = sub_group_shuffle_xor(v, st);
+      v = is_max ? fmax(v, o) : v + o;
+    }
+    return v;
+  }
+#endif
+  red[t] = v;
   barrier(CLK_LOCAL_MEM_FENCE);
   for (int st = KT / 2; st > 0; st >>= 1) {
-    if (j < st) {
-      red[t] = is_max ? fmax(red[t], red[t + st]) : red[t] + red[t + st];
-      red[256 + t] = is_max ? fmax(red[256 + t], red[256 + t + st]) : red[256 + t] + red[256 + t + st];
-    }
+    if (j < st) red[t] = is_max ? fmax(red[t], red[t + st]) : red[t] + red[t + st];
     barrier(CLK_LOCAL_MEM_FENCE);
   }
-  if (j == 0) {
-    outp[pg] = red[t];
-    outp[pg + 8] = red[256 + t];
-  }
+  v = red[t - j];
   barrier(CLK_LOCAL_MEM_FENCE);
+  return v;
 }
 __kernel void attend_rows(__global const float* proj, int k_off, int v_off, __global const uchar* ck,
                           __global const uchar* cv, __global const float* cks, __global const float* cvs,
-                          __global float* out, int heads, int kv_heads, int d, long pos0, int window, long slots,
+                          __global float* out, int heads, int kv_heads, int d, long pos0_, int window, long slots_,
                           int ring, float sm, int m) {
-  // the running max / sum of every pair are the same in all work-items: local memory, updated by work-item i
-  __local float q[PAIRS][256], sc[PAIRS][KT], red[512], tmax[PAIRS], tsum[PAIRS], ks[KT];
-  __local float lmax[PAIRS], lsum[PAIRS], lcorr[PAIRS];
-  __local uchar kt[KT][256];
+  // sc: the tile probabilities key-major (the 16 of a key are four float4 reads); lcorr / lsum per pair, for the
+  // work-items that accumulate the output of every pair
+  __local float q[PAIRS * QS], sc[KT * PAIRS], red[256], ks[KT], lcorr[PAIRS], lsum[PAIRS];
+  __local ushort kbits[KT * KS];   // half values (no cl_khr_fp16 needed: vload_half / vstore_half)
+  __local half* kh = (__local half*)kbits;
+  const int pos0 = (int)pos0_, slots = (int)slots_;   // positions stay below 2^31
   const int g = get_group_id(0), kvh = g % kv_heads, r0 = (g / kv_heads) * BR, t = get_local_id(0);
-  const int j = t % KT, pg = t / KT;   // the key and the pairs (pg, pg + 8) a work-item scores
+  const int j = t % KT, p = t / KT;   // the key of the tile and the pair this work-item scores
   const int nr = min(BR, m - r0);
   for (int i = 0; i < PAIRS; i++) {   // pair i = row r0 + i / GROUP, q-head kvh * GROUP + i % GROUP
     const int rr = r0 + i / GROUP;
-    q[i][t] = rr < m ? proj[((size_t)rr * heads + kvh * GROUP + i % GROUP) * d + t] : 0.f;
+    q[i * QS + t] = rr < m ? proj[((size_t)rr * heads + kvh * GROUP + i % GROUP) * d + t] : 0.f;
   }
-  if (t < PAIRS) { lmax[t] = -INFINITY; lsum[t] = 0.f; }
-  // the visible keys of the two pairs scored here (lo .. pos; pos = -1 past the last row) and of the block
-  const int row0 = pg / GROUP, row1 = (pg + 8) / GROUP;
-  const long pos_a = r0 + row0 < m ? pos0 + r0 + row0 : -1, pos_b = r0 + row1 < m ? pos0 + r0 + row1 : -1;
-  const long lo_a = window > 0 ? max(0L, pos0 + r0 + row0 - window + 1) : 0L;
-  const long lo_b = window > 0 ? max(0L, pos0 + r0 + row1 - window + 1) : 0L;
-  const long first = window > 0 ? max(0L, pos0 + r0 - window + 1) : 0L, last = pos0 + r0 + nr - 1;
+  const int row = p / GROUP;   // the visible keys of pair p: lo_p .. pos_p (pos_p = -1 past the last row)
+  const int pos_p = r0 + row < m ? pos0 + r0 + row : -1;
+  const int lo_p = window > 0 ? max(0, pos0 + r0 + row - window + 1) : 0;
+  const int first = window > 0 ? max(0, pos0 + r0 - window + 1) : 0, last = pos0 + r0 + nr - 1;
+  float run_max = -INFINITY, run_sum = 0.f;   // the softmax state of pair p, the same in its KT work-items
   float acc[PAIRS];
   for (int i = 0; i < PAIRS; i++) acc[i] = 0.f;
   barrier(CLK_LOCAL_MEM_FENCE);
-  for (long k0 = first; k0 <= last; k0 += KT) {
-    const int nk = (int)min((long)KT, last - k0 + 1);
-    // stage the tile's cached keys (key < pos0) as FP8 rows
-    for (int e = t; e < KT * 256 / 16; e += 256) {
-      const int kj = e / 16, part16 = (e % 16) * 16;
-      const long key = k0 + kj;
+  for (int k0 = first; k0 <= last; k0 += KT) {
+    const int nk = min(KT, last - k0 + 1);
+    const int base = ring ? k0 % slots : k0;   // the cache slot of key k0 + kj: base + kj, wrapped once
+    {   // stage the cached keys of the tile (key < pos0): work-item t decodes 16 bytes of key t / 16
+      const int kj = t / 16, part = (t % 16) * 16, key = k0 + kj;
       if (kj < nk && key < pos0) {
-        const size_t idx = (size_t)(ring ? key % slots : key) * kv_heads + kvh;
-        vstore16(vload16(0, ck + idx * d + part16), 0, &kt[kj][part16]);
-        if (part16 == 0) ks[kj] = cks[idx];
+        const int slot = ring && base + kj >= slots ? base + kj - slots : base + kj;
+        const size_t idx = (size_t)slot * kv_heads + kvh;
+        const uchar16 b = vload16(0, ck + idx * d + part);
+        const float16 f = (float16)(e4m3(b.s0), e4m3(b.s1), e4m3(b.s2), e4m3(b.s3), e4m3(b.s4), e4m3(b.s5),
+                                    e4m3(b.s6), e4m3(b.s7), e4m3(b.s8), e4m3(b.s9), e4m3(b.sa), e4m3(b.sb),
+                                    e4m3(b.sc), e4m3(b.sd), e4m3(b.se), e4m3(b.sf));
+        vstore_half16(f, 0, kh + kj * KS + part);
+        if (part == 0) ks[kj] = cks[idx];
+      }
+    }
+    // the V values of this work-item (dimension t) for the tile, loaded now and used after the scores
+    float vv[KT];
+    for (int kj = 0; kj < KT; kj++) {
+      const int kk = k0 + kj;
+      vv[kj] = 0.f;
+      if (kj < nk) {
+        if (kk < pos0) {
+          const int slot = ring && base + kj >= slots ? base + kj - slots : base + kj;
+          const size_t idx = (size_t)slot * kv_heads + kvh;
+          vv[kj] = e4m3(cv[idx * d + t]) * cvs[idx];
+        } else {
+          vv[kj] = proj[v_off + ((size_t)(kk - pos0) * kv_heads + kvh) * d + t];
+        }
       }
     }
     barrier(CLK_LOCAL_MEM_FENCE);
-    const long key = k0 + j;
-    float s0 = -INFINITY, s1 = -INFINITY;
-    if (j < nk) {
-      float dot0 = 0.f, dot1 = 0.f;
+    const int key = k0 + j;
+    float s = -INFINITY;
+    if (j < nk && key >= lo_p && key <= pos_p) {
+      __local const float* qp = q + p * QS;
+      float dot = 0.f;
       if (key < pos0) {
-        for (int e = 0; e < 256; e++) {
-          const float kd = e4m3(kt[j][e]);
-          dot0 += q[pg][e] * kd;
-          dot1 += q[pg + 8][e] * kd;
+        __local const half* kp = kh + j * KS;
+        for (int e = 0; e < 256; e += 4) {
+          const float4 a = vload4(0, qp + e), b = vload_half4(0, kp + e);
+          dot += a.x * b.x; dot += a.y * b.y; dot += a.z * b.z; dot += a.w * b.w;
         }
-        dot0 *= ks[j];
-        dot1 *= ks[j];
+        dot *= ks[j];
       } else {
         __global const float* kr = proj + k_off + ((size_t)(key - pos0) * kv_heads + kvh) * d;
-        for (int e = 0; e < 256; e++) {
-          const float kd = kr[e];
-          dot0 += q[pg][e] * kd;
-          dot1 += q[pg + 8][e] * kd;
+        for (int e = 0; e < 256; e += 4) {
+          const float4 a = vload4(0, qp + e), b = vload4(0, kr + e);
+          dot += a.x * b.x; dot += a.y * b.y; dot += a.z * b.z; dot += a.w * b.w;
         }
       }
-      if (key >= lo_a && key <= pos_a) s0 = dot0 * sm;
-      if (key >= lo_b && key <= pos_b) s1 = dot1 * sm;
+      s = dot * sm;
     }
-    pair_reduce(s0, s1, red, tmax, t, j, pg, 1);
-    const float p0 = s0 == -INFINITY ? 0.f : exp(s0 - fmax(lmax[pg], tmax[pg]));
-    const float p1 = s1 == -INFINITY ? 0.f : exp(s1 - fmax(lmax[pg + 8], tmax[pg + 8]));
-    sc[pg][j] = p0;
-    sc[pg + 8][j] = p1;
-    pair_reduce(p0, p1, red, tsum, t, j, pg, 0);
-    if (t < PAIRS) {
-      const float mn = fmax(lmax[t], tmax[t]), corr = lmax[t] == -INFINITY ? 0.f : exp(lmax[t] - mn);
-      lsum[t] = lsum[t] * corr + tsum[t];
-      lmax[t] = mn;
-      lcorr[t] = corr;
-    }
+    const float m_new = fmax(run_max, pair_reduce(s, 1, red, t, j));
+    const float pv = s == -INFINITY ? 0.f : exp(s - m_new);
+    const float tsum = pair_reduce(pv, 0, red, t, j);
+    const float corr = run_max == -INFINITY ? 0.f : exp(run_max - m_new);
+    run_sum = run_sum * corr + tsum;
+    run_max = m_new;
+    sc[j * PAIRS + p] = pv;
+    if (j == 0) lcorr[p] = corr;
     barrier(CLK_LOCAL_MEM_FENCE);
+    // work-item t = output dimension t: the V of every key once, for all 16 pairs
     for (int i = 0; i < PAIRS; i++) acc[i] *= lcorr[i];
-    // work-item t = output dimension t: every key's V once, for all 16 pairs
-    for (int kj = 0; kj < nk; kj++) {
-      const long kk = k0 + kj;
-      float v;
-      if (kk < pos0) {
-        const size_t idx = (size_t)(ring ? kk % slots : kk) * kv_heads + kvh;
-        v = e4m3(cv[idx * d + t]) * cvs[idx];
-      } else {
-        v = proj[v_off + ((size_t)(kk - pos0) * kv_heads + kvh) * d + t];
+    for (int kj = 0; kj < KT; kj++) {
+      const float v = vv[kj];
+      for (int i = 0; i < PAIRS; i += 4) {
+        const float4 w = vload4(0, sc + kj * PAIRS + i);
+        acc[i] += w.x * v; acc[i + 1] += w.y * v; acc[i + 2] += w.z * v; acc[i + 3] += w.w * v;
       }
-      for (int i = 0; i < PAIRS; i++) acc[i] += sc[i][kj] * v;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
   }
+  if (j == 0) lsum[p] = run_sum;
+  barrier(CLK_LOCAL_MEM_FENCE);
   for (int i = 0; i < PAIRS; i++) {
     const int rr = r0 + i / GROUP;
     if (rr < m) out[((size_t)rr * heads + kvh * GROUP + i % GROUP) * d + t] = acc[i] / lsum[i];
