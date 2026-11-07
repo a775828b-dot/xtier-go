@@ -73,10 +73,20 @@ class LauncherModel(private val app: Context) {
 
     fun stop() = EngineService.stop(app)
 
+    // the download of the chosen card (DownloadService), refreshed by poll()
+    var downloading by mutableStateOf(false)
+        private set
+    var downloadProgress by mutableStateOf<Downloader.Progress?>(null)
+        private set
+    var downloadResult by mutableStateOf("")
+        private set
+
     fun download(mirror: String) {
-        store.download(card(), mirror)
-        message = "已加入系统下载（通知栏可看进度）：${mirror.removePrefix("https://")}"
+        DownloadService.start(app, card(), mirror)
+        message = "开始下载：${mirror.removePrefix("https://")}（直连，域名经 223.5.5.5 解析）"
     }
+
+    fun cancelDownload() = DownloadService.cancel(app)
 
     suspend fun verify() {
         message = "正在校验 sha256…"
@@ -92,6 +102,9 @@ class LauncherModel(private val app: Context) {
             status = fetchStatus(c.port)
             device = withContext(Dispatchers.IO) { DeviceInfo.read(app) }
             files = withContext(Dispatchers.IO) { store.status(c) }
+            downloading = Downloads.running && Downloads.cardId == c.id
+            downloadProgress = if (Downloads.cardId == c.id) Downloads.progress else null
+            downloadResult = if (Downloads.cardId == c.id) Downloads.result else ""
             val ready = files.all { it.state == ModelStore.FileState.Ready }
             val key = "$selected|$values|$ready|${device.availBytes / (256L shl 20)}"
             if (key != lastKey) {

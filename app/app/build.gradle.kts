@@ -60,4 +60,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material3:material3-window-size-class")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // model downloads with our own resolver (DirectDns), ranges over several connections
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

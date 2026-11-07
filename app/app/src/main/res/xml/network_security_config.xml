@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The launcher polls the server on loopback over plain HTTP; everything else stays HTTPS only. -->
+<!-- Plain HTTP only to loopback (the launcher polls the server) and to Tencent's HTTPDNS (the downloader's
+     fallback resolver); everything else stays HTTPS only. -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">119.29.29.29</domain>
     </domain-config>
 </network-security-config>

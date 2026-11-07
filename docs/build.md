@@ -57,4 +57,4 @@ CI 用 `gradle/actions/setup-gradle` 装 Gradle 8.11.1；本地第一次可以 `
 CI 的 `android-app` 任务每次推送都编一份 debug APK（artifact `xtier-go-debug-apk`）。
 
 模型文件放 `Android/data/io.github.a775828b.xtiergo/files/models/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4/`：启动台里可以从
-hf-mirror / huggingface 下载（系统 DownloadManager），也可以 `adb push` 进去。
+hf-mirror / huggingface 直连下载（域名经 223.5.5.5 解析、不走代理，8 连接分段、断点续传、下完校验 sha256），也可以 `adb push` 进去。

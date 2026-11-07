@@ -233,10 +233,41 @@ private fun FilesBox(m: LauncherModel, c: Card) {
                     Text(label, color = color, fontSize = 12.sp)
                 }
             }
-            if (!ready) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (mirror in c.mirrors)
-                    OutlinedButton(onClick = { m.download(mirror) }) { Text("从 ${mirror.removePrefix("https://")} 下载", fontSize = 12.sp) }
-            } else OutlinedButton(onClick = { scope.launch { m.verify() } }) { Text("校验 sha256", fontSize = 12.sp) }
+            val p = m.downloadProgress
+            when {
+                m.downloading -> {
+                    LinearProgressIndicator(
+                        progress = { if (p != null && p.total > 0) p.done.toFloat() / p.total else 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        if (p == null) "准备下载…"
+                        else "${gib(p.done)} / ${gib(p.total)} · %.1f MB/s · %s".format(p.bytesPerSec / 1e6, p.file),
+                        color = Palette.accent, fontSize = 12.sp,
+                    )
+                    if (p != null && p.note.isNotEmpty()) Text(p.note, color = Palette.dim, fontSize = 11.sp)
+                    OutlinedButton(onClick = { m.cancelDownload() }) { Text("停止下载", fontSize = 12.sp) }
+                }
+                !ready -> {
+                    Text("直连下载：域名用 223.5.5.5 解析、连真实地址，不经过系统 DNS 和代理；中断了再点会接着下",
+                        color = Palette.dim, fontSize = 11.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        c.mirrors.forEachIndexed { i, mirror ->
+                            val label = "下载模型（${mirror.removePrefix("https://")}）"
+                            if (i == 0)
+                                Button(onClick = { m.download(mirror) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Palette.accent)) {
+                                    Text(label, fontSize = 12.sp, color = Palette.bg)
+                                }
+                            else OutlinedButton(onClick = { m.download(mirror) }) { Text(label, fontSize = 12.sp) }
+                        }
+                    }
+                }
+                else -> OutlinedButton(onClick = { scope.launch { m.verify() } }) { Text("校验 sha256", fontSize = 12.sp) }
+            }
+            if (m.downloadResult.isNotEmpty() && !m.downloading)
+                Text(m.downloadResult, color = if (m.downloadResult.startsWith("下载完成")) Palette.ok else Palette.warn,
+                    fontSize = 12.sp)
         }
     }
 }

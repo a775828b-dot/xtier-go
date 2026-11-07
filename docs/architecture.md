@@ -25,7 +25,7 @@ vLLM 留在服务器上当对照（`reference/`）。
 ```
 Android App（Kotlin，Jetpack Compose）
   启动台：模型卡片 · 启动参数 · 运行状态（平板三栏，手机三个标签页）
-  模型文件：下载（系统 DownloadManager，hf-mirror / huggingface）· sha256 校验 · adb push 也行
+  模型文件：直连下载（域名经 223.5.5.5 解析，不走系统 DNS / 代理；8 连接分段、断点续传）· sha256 校验 · adb push 也行
       │ startForegroundService(启动 JSON)            ▲ http://127.0.0.1:18400/xtg/status（每秒）
       ▼                                             │
 前台服务 EngineService（独立进程 :engine，specialUse，唤醒锁）
@@ -83,7 +83,7 @@ W4A16_NVFP4、层数分组、layer_types、RoPE），不认识就拒绝启动，
 - **内存检查**：App 用 `xtg_estimate`（不加载权重）对每个上下文 / KV 选项估算常驻内存，超过「可用内存 + 正在运行的服务 −
   1.5 GiB」的选项灰掉并写明需要多少。
 - **服务**：`EngineService` 在独立进程 `:engine` 里，原生崩溃不带走界面；关掉启动台不影响服务；一次一个模型。
-- **模型文件**：`Android/data/io.github.a775828b.xtiergo/files/models/<目录>/`，系统 DownloadManager 下载（断点续传），
+- **模型文件**：`Android/data/io.github.a775828b.xtiergo/files/models/<目录>/`。下载在前台服务 `DownloadService` 里跑：域名用阿里 DNS 的 HTTPS 接口（备用腾讯 HTTPDNS）解析，直连真实地址，不用系统 DNS（家里的 DNS 可能给代理的 fake-ip）；大文件 8 连接分段、断点续传，
   带 sha256 的文件可校验。
 
 ## 从 XTier 继承的做法
