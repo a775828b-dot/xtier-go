@@ -1,0 +1,4 @@
+进程 uid 10281 · u:r:untrusted_app:s0:c25,c257,c512,c768
+/dev/fastrpc-cdsp：打不开（/dev/fastrpc-cdsp: open failed: EACCES (Permission denied)）
+seg_m768_w8a16 rc=0 · 20 次 · 墙钟 1.9 s · NetRun 45.7 ms · NPU 40.9 ms
+tiny_m16_w8a16 rc=0 · 20 次 · 墙钟 0.2 s · NetRun 1.0 ms · NPU 0.4 ms

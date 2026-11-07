@@ -1,0 +1,14 @@
+[3k] step 0: ctx 3907 cached 0 out 3072 prefill 138.6 decode 5.63 tok/s, 2.489 tokens/forward, tools ['edit_file']
+[3k] step 1: HTTP 500 b'{"error":{"message":"request cancelled","type":"server_error","code":500}}', ending the session
+[3k] step 0: ctx 3907 cached 0 out 3072 prefill 129.3 decode 6.6 tok/s, 1.633 tokens/forward, tools []
+[8k] step 0: ctx 8843 cached 0 out 52 prefill 100.8 decode 8.21 tok/s, 1.417 tokens/forward, tools ['grep']
+[8k] step 1: ctx 8889 cached 0 out 40 prefill 132.5 decode 11.18 tok/s, 1.95 tokens/forward, tools ['grep']
+[8k] step 2: ctx 9414 cached 0 out 45 prefill 145.3 decode 12.67 tok/s, 2.316 tokens/forward, tools ['read_file']
+[8k] step 3: HTTP 500 b'{"error":{"message":"request cancelled","type":"server_error","code":500}}', ending the session
+[3k] step 0: ctx 3907 cached 0 out 2643 prefill 129.3 decode 8.65 tok/s, 2.376 tokens/forward, tools ['edit_file']
+[3k] step 1: ctx 4146 cached 0 out 2252 prefill 131.2 decode 11.23 tok/s, 3.922 tokens/forward, tools ['edit_file']
+[3k] step 2: ctx 4791 cached 0 out 59 prefill 122.4 decode 7.86 tok/s, 1.871 tokens/forward, tools ['check_python']
+[3k] step 3: ctx 4886 cached 0 out 162 prefill 181.9 decode 14.98 tok/s, 1.61 tokens/forward, tools ['check_python']
+[3k] step 4: ctx 4985 cached 0 out 110 prefill 182.1 decode 9.9 tok/s, 1.627 tokens/forward, tools ['read_file']
+[3k] step 5: ctx 5341 cached 0 out 78 prefill 176.2 decode 11.57 tok/s, 2.265 tokens/forward, tools ['read_file']
+[3k] step 6: HTTP 500 b'{"error":{"message":"request cancelled","type":"server_error","code":500}}', ending the session

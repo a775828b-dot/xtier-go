@@ -8,6 +8,7 @@
 ## 目标和口径
 
 - **任务**：DSH agent 任务，会话上下文涨到 32K。新内容（工具结果、读进来的文件）在它所在的深度 prefill，decode 在当前深度。
+  DSH 先不接：现在用简单 agent 任务代替（`tools/agent_bench.py`：4 个会话，在本仓库源码上做小改动，起点 3K–28K）。
   下面按深度 4K / 16K / 32K 分开算，另给一个 0 → 32K 会话的平均。
 - **目标**：prefill 300 tok/s、decode 40 tok/s；上下文保 128K（per_loop KV，投机解码因此是精确的）。
 - **精度**：int8 权重 / int8 激活（W8A16、W4A8）可以用，A/B 通过才能当默认：PPL、照抄、对 vLLM 的逐 token logprob、
@@ -96,8 +97,10 @@ GPU 本身（`tests/gpu_probe`）：读 66 GB/s；峰值 FP32 2.81、FP16 5.61 T
 - **和 GPU 同时跑**：NPU 每段 47.0 → 44.0 ms，不受影响；GPU 矩阵乘 539 → 540 GFLOP/s，也不受影响；GPU 读带宽 66 → 55.7 GB/s（−16%）。
 - **持续负载**：连续 4 分钟 2500 次，每段 47.3–47.5 ms 不变，NPU 42–44 °C。不过 qnn-net-run 在两次 execute 之间要读输入文件，
   NPU 实际只忙了一半时间；满负荷的长测等接进引擎后再做。
-- **App 能不能用 NPU**：vendor 的 public.libraries.txt 里有 libcdsprpc.so（App 能加载），/dev/fastrpc-cdsp 对其他用户可读。
-  adb run-as（runas_app 域）打开被拒，但这不代表 App 自己的域（untrusted_app）也会被拒，要在 App 里试（N0）。
+- **App 里能用 NPU（N0 已通过）**：App 进程（untrusted_app）自己打不开 /dev/fastrpc-cdsp（策略只给 App ioctl / read），
+  libcdsprpc.so 会转去 vendor 的 dspservice 拿设备的 fd。条件是清单声明 `<uses-native-library android:name="libcdsprpc.so">`；
+  另外，App 拉起的程序要把 `/vendor/lib64` 放进 LD_LIBRARY_PATH。App 里跑 seg_m768_w8a16：每段 NetRun 46 ms、NPU 上 41 ms，
+  和 adb 下一样，输出逐字节相同。
 - 固定开销：2560 × 2560、M = 16 的小图，每次 1.12 ms（NPU 上 0.48 ms）。
 
 ## 结论
@@ -106,9 +109,12 @@ GPU 本身（`tests/gpu_probe`）：读 66 GB/s；峰值 FP32 2.81、FP16 5.61 T
    线性层约 50 tok/s。GPU 的 int8 点积做好了，线性层也能到两三百，但注意力也在 GPU 上，两样只能串着跑。
 2. **注意力两处都要重写**：prefill 的（现在占 59%）和验证步的多行注意力（单行的 6 倍）。深度一大，prefill 卡在 GPU 注意力上。
 3. **decode 先修内核再谈投机解码。** GEMV 只用了带宽的 37%，发射空隙占 13%，M > 1 又不复用权重。这三项修好，单 token
-  4K 约 17、32K 约 14，投机解码再乘每步接受数。
-4. **decode 留在 GPU。** NPU 用的是 INT8 权重，每步要读的字节是 NVFP4 的 1.8 倍。
-5. **内存**：NPU 要另放一份 INT8 权重，约 3.2 GiB。32K 时全部加起来约 7.0 GiB（GPU 权重 2.4 + NPU 3.2 + KV 1.0 + 临时 0.5），
+  4K 约 17、32K 约 14，投机解码再乘每次前向出的 token 数。
+4. **提示查找草稿在 agent 任务上只到每次前向约 1.9–2.0 个 token**（S1，见下）。思考占生成量的 80%，每次只能出 1.8 个左右，
+  草稿规则改成最长匹配、一次验证 3 条候选，也只到 2.1。decode 40 要约 2.6 个（4K）、3.2 个（32K），只靠查找到不了，
+  要换成模型做草稿。
+5. **decode 留在 GPU。** NPU 用的是 INT8 权重，每步要读的字节是 NVFP4 的 1.8 倍。
+6. **内存**：NPU 要另放一份 INT8 权重，约 3.2 GiB。32K 时全部加起来约 7.0 GiB（GPU 权重 2.4 + NPU 3.2 + KV 1.0 + 临时 0.5），
    在 8 GiB 预算内；128K 约 9.6 GiB，超了。NPU 权重要降到 4 bit（约 1.7 GiB），或者长上下文时 NPU 不常驻。
 
 ## 计划
@@ -120,8 +126,9 @@ GPU 本身（`tests/gpu_probe`）：读 66 GB/s；峰值 FP32 2.81、FP16 5.61 T
 
 | 步 | 内容 | 通过 | 不通过 |
 |---|---|---|---|
-| N0 | App 进程里跑 NPU：APK 带 libQnnHtp 和 V79 stub，skel 放原生库目录并设 ADSP_LIBRARY_PATH；tiny_m16 和 seg_m768_w8a16 各跑一次，输出和 adb 下一致 | 走路线 N：NPU 线性层 + GPU 注意力 | 走路线 G：G6 提前，GPU int8 点积做线性层；prefill 目标降为会话平均约 150 |
-| S1 | 在服务器上回放真实 DSH 会话，统计提示查找草稿每步能接受几个（贪心和默认温度各一次，思考文本单独统计） | 4K ≥ 2.6、32K ≥ 3.2 个/步：decode 40 可达 | 达不到：加自草稿或小草稿模型（S2），否则 decode 按 25–35 算 |
+| N0 | App 进程里跑 NPU：APK 带 libQnnHtp 和 V79 stub，skel 放原生库目录并设 ADSP_LIBRARY_PATH；tiny_m16 和 seg_m768_w8a16 各跑一次，输出和 adb 下一致 | **11-07 夜通过**：走路线 N（NPU 线性层 + GPU 注意力） | 走路线 G：G6 提前，GPU int8 点积做线性层；prefill 目标降为会话平均约 150 |
+| S1 | 先不接 DSH，用简单 agent 任务（`tools/agent_bench.py` 的 4 个会话）统计提示查找草稿每次前向能出几个 token（默认温度、贪心、关思考各一组，思考单独统计） | 4K ≥ 2.6、32K ≥ 3.2：decode 40 可达 | **11-07 夜：1.9（k = 8）/ 2.0（k = 16）**，没达到。decode 按 25–30 算，要 40 得做 S2 |
+| S2 | （研究）模型做草稿：EAGLE 式的小草稿头，用 Dory 自己的隐状态训练；词表要缩小，否则每个草稿 token 都要读一遍 0.3–0.6 GiB 的 lm_head | 默认温度、开思考时每次前向 ≥ 2.6 个 | — |
 
 ### decode（GPU）
 
@@ -144,6 +151,12 @@ GPU 本身（`tests/gpu_probe`）：读 66 GB/s；峰值 FP32 2.81、FP16 5.61 T
 | G6 | GPU int8 点积矩阵乘（W4A8）：E2M1 × 2 是不超过 12 的整数，权重放进 int8 不丢精度；激活每 16 / 32 个一组动态量化；点积后乘块缩放，进 FP32 累加。路线 G 的主力，路线 N 的备用 | gpu_probe ≥ 3 TOP/s；A/B 通过 |
 | N5 | （研究）把一部分注意力挪到 NPU：滑窗层形状固定，最好做；全局层要按 KV 长度分桶的静态图，外加一份 FP16 的 K / V | 32K 深度的 prefill 有提升才继续 |
 
+### 前缀缓存（P1，小改动）
+
+客户端不回传思考（`reasoning_content`）时，新提示在上一轮的生成提示里就分叉了（`<think>\n` 对 `<think></think>`），比滑窗快照
+早一个 token，于是每一轮都从零 prefill（agent_bench 第一版实测每步 cached 0）。改法：恢复快照后再回退最多 kRewindSlack
+个位置。DSH 会回传思考，不受影响；`tools/agent_bench.py` 也已改成回传。
+
 ### 内存（M1，和 N1 一起做）
 
 GPU 权重只放一份：映射模型文件或用 dmabuf（现在是 CPU 映射 + GPU 副本）。NPU 的上下文二进制约 3.2 GiB，128K 时二选一：
@@ -151,14 +164,15 @@ GPU 权重只放一份：映射模型文件或用 dmabuf（现在是 CPU 映射 
 
 ## 预计（估算）
 
-decode，G1–G5 做完后，每步接受 a 个（验证步按单步的 1.1 倍算）：
+decode，G1–G5 做完后，每次前向出 a 个 token（验证步按单步的 1.1 倍算）：
 
-| a | 1（不投机） | 2 | 3 | 4 |
-|---|---:|---:|---:|---:|
-| 4K | 17 | 31 | 47 | 63 |
-| 32K | 14 | 25 | 38 | 50 |
+| a | 1（不投机） | 1.9（S1 实测） | 2 | 3 | 4 |
+|---|---:|---:|---:|---:|---:|
+| 4K | 17 | 30 | 31 | 47 | 63 |
+| 32K | 14 | 24 | 25 | 38 | 50 |
 
-decode 40 要每步接受：4K 约 2.6 个、32K 约 3.2 个。照抄类内容实测 8.1 个，其他内容要看 S1。
+decode 40 要每次前向出 4K 约 2.6 个、32K 约 3.2 个。简单 agent 任务实测（S1）：默认温度、开思考 1.90（k = 8），贪心 2.11，
+关思考 2.09；照抄类内容 8.1。所以 decode 40 要等 S2 的草稿头。
 
 prefill（NPU 线性层 2.8 ms/token，GPU 注意力 1.5 TFLOP/s，流水效率 85%）：
 
@@ -177,10 +191,11 @@ prefill（NPU 线性层 2.8 ms/token，GPU 注意力 1.5 TFLOP/s，流水效率 
 
 ## 风险
 
-- **N0 不通过**：没有 NPU，prefill 会话平均约 150（路线 G）。
+- **别的手机上的 NPU**：N0 只在 Y900 上验证过（经 dspservice 拿设备），别家的系统策略可能不同。App 要保留 NPU 自检，
+  不通过就退回 GPU（路线 G，prefill 会话平均约 150）。
 - **W8A16 的 A/B 不过**：只能退回 NPU FP16，线性层约 115 tok/s，或者做混合精度（敏感的矩阵乘用 FP16）。
 - **注意力内核的效率**：上表按 FP32 / FP16 峰值的一半估算，Adreno 上没有现成的同类内核可以对照。
-- **投机解码的接受数**：思考文本的接受率会低；DSH 默认温度下"采样等于草稿才接受"，接受数比贪心时低。
+- **投机解码的接受数**：S1 已测，提示查找只到 1.9–2.0。decode 40 取决于 S2 的草稿头能不能训出来；训不出来就按 25–30 算。
 - **持续负载**：只测了 4 分钟、NPU 半负荷；32K 的提示要连续 prefill 两分钟左右，满负荷时会不会降频没测过。
 - **128K 内存**：NPU 4 bit 方案（LPBQ）还没跑通过。
 
@@ -190,3 +205,7 @@ prefill（NPU 线性层 2.8 ms/token，GPU 注意力 1.5 TFLOP/s，流水效率 
   （[build.md](build.md) 的 adb shell 一节）。
 - NPU（服务器上需要 QAIRT 2.47）：`tools/npu_probe/make_models.py`（默认折叠，`--plain` 照写）→ `build_kit.sh` →
   把 kit 推到设备上跑 `run_probe.sh` → 结果拿回服务器跑 `analyze.py device`。各脚本开头有说明。
+- 简单 agent 任务：`tools/agent_bench.py LABEL --url http://127.0.0.1:18400`（对着 xtg-server 跑，测 prefill / decode 和投机解码
+  计数）。草稿接受数：`tools/draft_sim.py trace`（对着返回 token id 的服务器生成同样的会话，比如 vLLM）→ `draft_sim.py sim
+  [--whatif]`；`draft_sim.py check` 先核对模拟和引擎一致（11-07：同一个照抄请求，引擎 49 步 / 草稿 387 / 接受 349，模拟 49 / 392 / 350，
+  差别来自重新分词）。

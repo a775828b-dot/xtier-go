@@ -35,7 +35,9 @@ Dory：`enable_thinking`、`medium_effort`、`truncate_history_thinking`）。`m
 
 前缀缓存：每个请求和上一个请求的 token 比最长公共前缀，复用这一段的 KV。滑窗层是环形缓冲，回退超过 1 个位置时恢复到
 不晚于公共前缀的快照（每个提示词 prefill 完存一份，默认留 2 份），否则从零算。agent 循环里模板会把上一轮的思考和调用原样
-渲染回来，实测第二轮 405 个提示 token 命中 367 个（= 上一轮提示 + 生成）。
+渲染回来，实测第二轮 405 个提示 token 命中 367 个（= 上一轮提示 + 生成）。前提是客户端把
+`reasoning_content` 回传：不回传时新提示在上一轮的生成提示里就分叉，比滑窗快照早一个 token，每轮都从零 prefill
+（[speed-plan.md](speed-plan.md) P1）。
 
 ## `/generate`（SGLang 子集）
 

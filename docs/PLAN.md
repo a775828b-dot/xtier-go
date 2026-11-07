@@ -29,10 +29,10 @@ GPU 小 M 内核没复用权重、只快 19%；NPU 摸底：折叠后的 W8A16 �
 |---|---|---|
 | 1 引擎 + Dory + 服务（服务器上） | 通用内核、NVFP4、KV（线性 / 环形、FP8）、Dory 前向（两种 KV 模式、分块）、分词器、模板、解析器、HTTP、C API、命令行工具 | **完成**（2026-11-07，[报告](reports/2026-11-07-host-bringup.md)） |
 | 1b App 骨架 | Compose 启动台、前台服务、JNI、模型文件下载 / 校验、内存估算 | 写完，CI 编译；**没在设备上跑过** |
-| 0 真机摸底 | `/proc/cpuinfo`（i8mm / bf16 / sve）、前台服务的 cpuset、内存带宽（1 / 2 / 6 / 8 线程）、持续负载温度、`libOpenCL.so` 是否对 App 开放；`adb shell` 跑 `kernels_test`、`xtg-server` | GPU / NPU 部分完成（App 里 OpenCL 可用，[报告](reports/2026-11-07-y900-npu-gpu-probe.md)）；cpuset、CPU 带宽、满负荷持续温度、App 里的 NPU 待做 |
+| 0 真机摸底 | `/proc/cpuinfo`（i8mm / bf16 / sve）、前台服务的 cpuset、内存带宽（1 / 2 / 6 / 8 线程）、持续负载温度、`libOpenCL.so` 是否对 App 开放；`adb shell` 跑 `kernels_test`、`xtg-server` | GPU / NPU 部分完成（App 里 OpenCL 可用，[报告](reports/2026-11-07-y900-npu-gpu-probe.md)）；App 里的 NPU 已通过（经 dspservice）；cpuset、CPU 带宽、满负荷持续温度待做 |
 | 2 CPU 速度 | NEON：NVFP4 GEMV 做到实测带宽 70%、GEMM（i8mm W4A8，A/B 精度后再定默认）、注意力（FP8 KV 直接解码）、范数 / RoPE；线程绑核 | 待做 |
 | 2b 真机验收 | App 真机启动、DSH Go X 真实任务、息屏 / 后台 30 分钟、首请求不卡、内存不触发 LMK、10 分钟持续速度 | 待做 |
-| 3 加速包 | FP8 KV 更细的缩放（每 32 个元素）、提示词查找投机解码（n-gram，验证 k 个 token 与 decode 一步读的权重一样多）、多个会话槽 | 投机解码已实现（`spec_k`，per_loop 精确），等 GPU 小 M 内核（[speed-plan.md](speed-plan.md) G2 / G3）；其余待做 |
+| 3 加速包 | FP8 KV 更细的缩放（每 32 个元素）、提示词查找投机解码（n-gram，验证 k 个 token 与 decode 一步读的权重一样多）、多个会话槽 | 投机解码已实现（`spec_k`，per_loop 精确），等 GPU 小 M 内核（[speed-plan.md](speed-plan.md) G2 / G3）；agent 任务上每次前向约 1.9 个（S1），要更多得做草稿头（S2）；其余待做 |
 | 4 GPU / NPU | Adreno（OpenCL）整步驻留；Hexagon（QNN）做 prefill 的线性层，GPU 同时做注意力。按 [speed-plan.md](speed-plan.md) 的 N0 → G1–G5 / N1–N3 推进 | 进行中：GPU 驻留已跑通，NPU 摸底完成 |
 | 5 更多模型 | 新模型 = `packs/` 一个目录 + `configs/` 一张卡片 | 待做 |
 

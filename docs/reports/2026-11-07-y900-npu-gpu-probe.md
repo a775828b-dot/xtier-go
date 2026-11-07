@@ -1,4 +1,4 @@
-# Y900 真机摸底：GPU 驻留路径、内核剖析、NPU
+# Y900 真机摸底：GPU 驻留路径、内核剖析、NPU、App 里的 NPU、草稿接受数
 
 2026-11-07 晚，联想 Y900 经 USB 接到开发机，命令行工具和 NPU 包用 `adb shell` 跑；模型、上下文二进制在 x86 服务器上生成。
 据此定的方案见 [speed-plan.md](../speed-plan.md)。原始输出在 [data/y900-20261107-probe/](data/y900-20261107-probe/)。
@@ -141,7 +141,51 @@ qnn-net-run 两次 execute 之间要读输入文件（每 250 次墙钟约 22 s�
 - `/vendor/etc/public.libraries.txt` 列了 `libcdsprpc.so`，App 能加载。
 - `/dev/fastrpc-cdsp`：`crw-rw-r-- system system u:object_r:vendor_qdsp_device:s0`，其他用户可读。
 - `run-as` 进开发版 App 的 uid 后打开被拒（Permission denied）。但 run-as 的 SELinux 域是 `runas_app`，不是 App 实际
-  运行时的 `untrusted_app`，这一项还没有结论，要在 App 里实际调一次 QNN（方案的 N0）。
+  运行时的 `untrusted_app`，这一项还没有结论，要在 App 里实际调一次 QNN（方案的 N0，下一节）。
+
+## N0：App 进程里的 NPU（11-07 夜）
+
+开发版 APK 用 `-PxtgQnnLibs` 带上 QNN 的 HTP 库，以及改名成 lib*.so 的 qnn-net-run / qnn-profile-viewer（安装时解出到原生库目录）。
+DEV 面板的「NPU 自检」或 `am start ... --ez npu_selftest true` 会从 App 进程跑 `files/npu/` 里的上下文二进制（`NpuProbe.kt`）。
+
+- **第一次失败**（rc 11，"Device Creation failure"）：App 拉起的程序找不到 libcdsprpc.so。`/data/app` 下的程序进的是链接器的
+  受限区段，看不到 /vendor/lib64；adb 用的 /data/local/tmp 是不受限的区段。LD_LIBRARY_PATH 加上 /vendor/lib64 后就通过了。
+- **设备怎么来的**：App 进程自己 open /dev/fastrpc-cdsp 被 SELinux 拒（`avc: denied { open } ... untrusted_app ...
+  vendor_qdsp_device`），vendor 策略只给 appdomain `ioctl read`。libcdsprpc.so 改从 `vendor.qti.hardware.dsp.IDspService`
+  （dspservice）拿 fd，日志里有 `close device 8 thru HAL on domain 3`。
+- **结果**（[原始](data/y900-20261107-probe/n0-selftest.txt)）：seg_m768_w8a16 两次，NetRun 46.0 / 45.7 ms、NPU 上 41.0 / 40.9 ms；
+  tiny_m16_w8a16 1.0 / 0.4 ms，都和 adb 下一样。seg_m768 的 h2 / k / q 前 32 行和 adb 下逐字节相同。
+- 清单加了 `<uses-native-library android:name="libcdsprpc.so">`：以后在 App 进程里直接加载 QNN（N1）时要用。
+
+## S1：简单 agent 任务上的草稿接受数（11-07 夜）
+
+- **任务**：`tools/agent_bench.py` 的 4 个会话，在本仓库源码上做小改动，起点 3K / 8K / 16K / 28K。每个会话最多 10 步，
+  每次最多生成 8192 个 token。DSH 先不接。
+- **生成**：在服务器上用 vLLM 0.33.0 跑（同一模型、2 循环、per_loop），`tools/draft_sim.py trace` 记下每个请求的提示和输出
+  token，思考照样回传进历史。三组，共 87 个请求、6.2 万个 decode token。
+- **模拟**：`draft_sim.py sim` 按 server/runtime.cpp 的规则：找上一次出现的 3-gram（没有就找 2-gram），取后面最多 k 个当草稿。
+  因为"采样等于草稿才接受"，记下的序列给出的就是引擎会走的步数。核对：引擎实测的照抄请求是 49 步、草稿 387、接受 349，
+  模拟得 49 / 392 / 350。
+- 另外两种规则只是假设，引擎里没有："最长匹配"是 n 从 16 往下找；"3 条"是同时验证最近 3 处出现的续写。
+
+每次前向出的 token（[原始](data/y900-20261107-probe/s1-sim-whatif.md)）：
+
+| 组 | decode token（思考 / 正文 / 工具调用） | k = 8 | k = 16 | 最长匹配 k = 16 | 最长匹配 3 条 k = 16 |
+|---|---|---:|---:|---:|---:|
+| 默认温度（1.0 / top_p 0.95）、开思考 | 30,755（80% / 3% / 17%） | **1.90** | 2.00 | 2.02 | 2.09 |
+| 　其中思考 | | 1.80 | 1.88 | 1.89 | 1.96 |
+| 　其中工具调用 | | 2.86 | 3.17 | 3.23 | 3.38 |
+| 默认温度、关思考 | 7,399（0 / 10% / 90%） | 2.09 | 2.21 | 2.25 | 2.33 |
+| 贪心、开思考 | 23,955（65% / 4% / 31%） | 2.11 | 2.24 | 2.27 | 2.39 |
+| 　其中工具调用 | | 4.35 | 5.56 | 5.97 | 6.46 |
+| 每次验证的草稿行数 | | 7.9 | 15.6 | 15.7 | 31 |
+
+- 思考的量最大，每次前向只有 1.8 个左右，草稿规则怎么改都上不去。工具调用（edit_file 照抄旧代码）高得多，贪心时能到 4–6。
+- 按深度看没有单调规律，会话之间差别比深度之间大。每个会话的第一步思考都很长：2.8–6.9K 个 token，16K 那个会话
+  写满 8192 也没调工具。
+- 在服务器 GPU 上直接跑第一版 agent_bench（xtg-server，k = 8），停掉之前完成了几步：每个请求每次前向 1.4–3.9 个，
+  和模拟是同一量级（[原始](data/y900-20261107-probe/s1-xtg-agent-bench-partial.log)）。那一版没回传思考，每一步都 cached 0，
+  原因见 [speed-plan.md](../speed-plan.md) 的 P1。
 
 ## 数据文件
 
@@ -157,3 +201,7 @@ qnn-net-run 两次 execute 之间要读输入文件（每 250 次墙钟约 22 s�
 | `npu-chunks.txt` | 折叠 W8A16 的块大小（models4 = 512 / 768 / 1536） |
 | `npu-fold-detailed-seg_m1024_w8a16.txt` | 折叠图的逐算子 profile |
 | `npu-concurrency-sustained.txt` | 和 GPU 同时跑、连续 4 分钟 |
+| `n0-selftest.txt` | App 进程里的 NPU 自检 |
+| `s1-sim.md`、`s1-sim-whatif.md` | 草稿接受数：引擎规则 k = 4 / 8 / 16，以及另外两种规则 |
+| `s1-trace-{think,nothink,greedy}.log` | vLLM 生成的三组会话，每一步的深度、生成数、调用的工具 |
+| `s1-xtg-agent-bench-partial.log` | 服务器上 xtg-server 跑第一版 agent_bench 完成的几步 |

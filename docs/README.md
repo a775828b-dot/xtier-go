@@ -16,4 +16,4 @@
 | [reports/2026-11-07-host-bringup.md](reports/2026-11-07-host-bringup.md) | 初版在服务器上的对照报告 |
 | [reports/2026-11-07-y900-bringup.md](reports/2026-11-07-y900-bringup.md) | Y900 首轮验证：App、CPU 短请求、接口 |
 | [reports/2026-11-07-gpu-review-snapshot.md](reports/2026-11-07-gpu-review-snapshot.md) | GPU 线性层原型的审阅快照 |
-| [reports/2026-11-07-y900-npu-gpu-probe.md](reports/2026-11-07-y900-npu-gpu-probe.md) | Y900 真机摸底：GPU 驻留路径、内核剖析、投机解码、NPU（图的写法、量化、块大小、并发） |
+| [reports/2026-11-07-y900-npu-gpu-probe.md](reports/2026-11-07-y900-npu-gpu-probe.md) | Y900 真机摸底：GPU 驻留路径、内核剖析、投机解码、NPU（图的写法、量化、块大小、并发）、App 里的 NPU、agent 任务的草稿接受数 |
