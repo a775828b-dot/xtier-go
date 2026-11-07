@@ -29,13 +29,14 @@ add_library(xtg_engine STATIC
   engine/src/safetensors.cpp
   engine/src/kernels.cpp
   engine/src/kernels_neon.cpp
+  engine/src/opencl.cpp
   engine/src/kv.cpp
   engine/src/sampler.cpp
   engine/src/model.cpp
   packs/packs.cpp
   packs/dory/dory.cpp)
-target_include_directories(xtg_engine PUBLIC engine/include third_party PRIVATE packs)
-target_link_libraries(xtg_engine PUBLIC Threads::Threads)
+target_include_directories(xtg_engine PUBLIC engine/include third_party PRIVATE packs third_party/OpenCL)
+target_link_libraries(xtg_engine PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 if(ANDROID)
   target_link_libraries(xtg_engine PUBLIC log)
 endif()
@@ -65,4 +66,7 @@ if(XTG_TESTS)
   add_executable(parsers_test tests/parsers_test.cpp)
   target_link_libraries(parsers_test PRIVATE xtg_server)
   add_test(NAME parsers COMMAND parsers_test)
+  # Explicit device test: normal CPU CI does not require an OpenCL GPU.
+  add_executable(opencl_test tests/opencl_test.cpp)
+  target_link_libraries(opencl_test PRIVATE xtg_engine)
 endif()

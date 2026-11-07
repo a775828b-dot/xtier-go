@@ -1,0 +1,7 @@
+11-07 18:27:02 [xtg] OpenCL high performance hint: 0
+11-07 18:27:02 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights)
+11-07 18:27:03 [xtg] OpenCL packed weights: 2529034240 bytes
+11-07 18:27:03 [xtg] dory: 72 layers (16 / 40 x 2 / 16), last_loop, fp8 KV, context 4096, weights mapped in 1.22 s
+11-07 18:27:25 [xtg] decode attention + KV store: 1.149621s
+11-07 18:27:25 [xtg] GPU decode: NVFP4 2.693586s/3584 calls, BF16 0.213908s/17 calls
+{"ids":[1934,1261,11530,6628,56455,1046,1032,23196,4392,11449,10437,1139,84720,1320,1013,1010],"text":" has a shared memory GPU. 这是中文测试。\r\n","prompt_tokens":325,"prefill_tok_s":18.385285497157028,"decode_tok_s":3.6592186458857405}

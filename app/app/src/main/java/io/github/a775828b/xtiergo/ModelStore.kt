@@ -14,7 +14,7 @@ class ModelStore(private val context: Context) {
     fun root(): File = File(context.getExternalFilesDir(null), "models").apply { mkdirs() }
     fun dir(card: Card): File = File(root(), card.dir)
 
-    enum class FileState { Missing, Downloading, Partial, Ready, Bad }
+    enum class FileState { Missing, Downloading, Partial, Unverified, Ready, Bad }
 
     data class Status(val name: String, val state: FileState, val bytes: Long, val size: Long)
 
@@ -22,7 +22,9 @@ class ModelStore(private val context: Context) {
 
     private fun stamp(file: File) = file.path + ":" + file.length() + ":" + file.lastModified()
 
-    fun markVerified(file: File, sha: String) = verified.edit().putString(stamp(file), sha).apply()
+    fun markVerified(file: File, sha: String) {
+        check(verified.edit().putString(stamp(file), sha).commit()) { "无法保存文件校验结果" }
+    }
 
     fun status(card: Card): List<Status> {
         val downloading = Downloads.running && Downloads.cardId == card.id
@@ -34,6 +36,8 @@ class ModelStore(private val context: Context) {
             when {
                 file.exists() && file.length() == f.size && f.sha256 != null && checked != null && checked != f.sha256 ->
                     Status(f.name, FileState.Bad, file.length(), f.size)
+                file.exists() && file.length() == f.size && f.sha256 != null && checked == null ->
+                    Status(f.name, FileState.Unverified, file.length(), f.size)
                 file.exists() && file.length() == f.size -> Status(f.name, FileState.Ready, f.size, f.size)
                 downloading && current == f.name -> Status(f.name, FileState.Downloading, part.length(), f.size)
                 file.exists() -> Status(f.name, FileState.Bad, file.length(), f.size)
@@ -51,7 +55,10 @@ class ModelStore(private val context: Context) {
         for (f in card.files) {
             val sha = f.sha256 ?: continue
             val file = File(dir(card), f.name)
-            if (!file.exists()) continue
+            if (!file.exists() || file.length() != f.size) {
+                bad += f.name
+                continue
+            }
             val md = MessageDigest.getInstance("SHA-256")
             file.inputStream().use { input ->
                 val buf = ByteArray(1 shl 20)

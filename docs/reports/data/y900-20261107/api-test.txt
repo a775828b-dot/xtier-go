@@ -1,0 +1,13 @@
+ok   /health is 200
+ok   /v1/models lists dory
+ok   plain answer without thinking: '5'
+ok   streamed reasoning (138 chars)
+ok   one read_file call: {0: {'id': 'call_573eadd050d78852d1c59c59', 'name': 'read_file', 'args': '{"path": "src/main.cpp"}'}}
+ok   call arguments {'path': 'src/main.cpp'}
+ok   finish_reason ['tool_calls']
+ok   usage chunk [{'prompt_tokens': 304, 'completion_tokens': 63, 'total_tokens': 367, 'prompt_tokens_details': {'cached_tokens': 3}}]
+ok   answer uses the tool result: 'The program prints:\n\n```\nhello from xtier-go\n```\n\n`std::puts` outputs the string `"hello from xtier-go"` followed by a n'
+ok   follow-up reuses the cached prefix: 367 of 405 prompt tokens
+ok   /generate input logprobs (5 entries), text ' Paris. The capital'
+ok   /flush_cache
+PASS

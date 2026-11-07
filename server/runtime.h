@@ -88,7 +88,7 @@ class Runtime {
 
   void start();   // returns at once: loading and the HTTP server run in the background
   void stop();
-  bool online() const { return state_.load() == State::Online; }
+  bool online() const { return state_.load() == State::Online && !stopping_.load(); }
   json status() const;
   std::string metrics() const;
 

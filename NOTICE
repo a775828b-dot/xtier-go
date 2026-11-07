@@ -6,6 +6,8 @@ This product includes third-party code under third_party/:
 - nlohmann/json 3.12.0 (MIT), https://github.com/nlohmann/json, third_party/nlohmann/LICENSE.MIT
 - cpp-httplib 0.65.0 (MIT), https://github.com/yhirose/cpp-httplib, third_party/httplib/LICENSE
 - minja 021c2293c187789ef13d56c6cfd89c9b134fd80f (MIT), https://github.com/google/minja, third_party/minja/LICENSE
+- Khronos OpenCL-Headers (Apache-2.0, fetched 2026-11-07), https://github.com/KhronosGroup/OpenCL-Headers,
+  third_party/OpenCL/CL/{cl.h,cl_platform.h,cl_version.h}; copyright and license notices retained in each header.
 
 The Dory model pack (packs/dory) and the reference implementation (reference/dory_ref.py) follow the Dory model of
 vLLM (https://github.com/vllm-project/vllm, Apache-2.0, vllm/model_executor/models/dory.py, contributed by NVIDIA).

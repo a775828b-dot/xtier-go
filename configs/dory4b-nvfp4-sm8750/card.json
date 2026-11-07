@@ -24,7 +24,7 @@
       {"name": "model.safetensors", "size": 3202498032, "sha256": "ca08dec5d70b653c03e57903dd33725ec8cc80133c53a1bd9c83f99dd03f3e46"}
     ]
   },
-  "bench": {"kind": "agent", "dec": "--", "pre": "--", "title": "还没在安卓上实测；服务器 x86 上的正确性对照见 docs/reports/2026-11-07-host-bringup.md"},
+  "bench": {"kind": "text", "dec": "3.7–4.4", "pre": "6.7–7.2", "title": "Y900 CPU短请求实测：8线程、2循环、last_loop、FP8；133/325输入、各64输出、冷前缀、关闭思考；每组1次，非DSH agent测速，长上下文未验收。"},
   "options": [
     {"key": "loops", "target": "option", "label": "循环次数", "default": "2",
      "choices": [["2", "2 · 模型卡推荐"], ["1", "1 · 最快"], ["3", "3"], ["4", "4 · 最准、最慢"]],
@@ -53,7 +53,7 @@
      "unavailable": {"gpu": "还没做（计划第 4 阶段）", "npu": "还没做（计划第 4 阶段）"}}
   ],
   "notes": [
-    {"when": {"kv_dtype": "fp8"}, "text": "FP8 KV：服务器上文本 NLL 比 BF16 高 0.1–0.2%，带工具定义的提示偏差更大；未在安卓上实测"},
+    {"when": {"kv_dtype": "fp8"}, "text": "FP8 KV：服务器文本NLL比BF16高0.1–0.2%；Y900短请求与接口通过，完整精度和长上下文仍待验收"},
     {"when": {"kv_mode": "per_loop", "context": "262144"}, "text": "per_loop + 256K：常驻约 9.8 GiB，这台机器放不下", "warn": true},
     {"when": {"context": "262144"}, "text": "256K：手机 CPU 上冷 prefill 要按小时计，要靠前缀缓存一轮一轮长上去", "warn": true},
     {"when": {"history_thinking": "keep"}, "text": "保留历史思考：前缀缓存不断，但上下文涨得更快；与官方模板的默认不同"},

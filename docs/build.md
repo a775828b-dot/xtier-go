@@ -58,3 +58,21 @@ CI 的 `android-app` 任务每次推送都编一份 debug APK（artifact `xtier-
 
 模型文件放 `Android/data/io.github.a775828b.xtiergo/files/models/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4/`：启动台里可以从
 hf-mirror / huggingface 直连下载（域名经 223.5.5.5 解析、不走代理，8 连接分段、断点续传、下完校验 sha256），也可以 `adb push` 进去。
+
+### 本地构建与真机回归
+
+已有其他 NDK 时可用 `-PxtgNdkVersion=28.2.13676358` 覆盖；未指定仍使用原来的 27.2.12479018。
+Y900 本轮使用 Gradle 8.10.2、NDK 28.2、JDK 17，通过 `assembleDebug assembleDebugAndroidTest lintDebug`。
+
+安装主 APK 和 androidTest APK 后：
+
+```bash
+adb shell am instrument -w -r -e class io.github.a775828b.xtiergo.ModelStoreTest,io.github.a775828b.xtiergo.EngineServiceTest \
+  io.github.a775828b.xtiergo.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+文件测试使用独立临时目录；服务测试需要卡片中的真实模型，否则跳过。服务测试会启动、停止当前本机服务，验证长 prefill 与排队请求退出、主线程响应以及重启。
+`ModelDownloadTest` 仅显式传入 `-e modelMirror <URL>` 时下载真实模型；本轮 USB 本地服务只验证传输和哈希，不代表独立联网下载通过。
+
+Y900 上用 ADB 提前创建 external-files 下的模型目录会得到 shell 所有者，App 可能无法写入。让 App 创建目录并通过自己的下载器写入；
+不要以放宽整个目录权限作为修复。导入已有文件时，带哈希的文件必须校验后才能启动。

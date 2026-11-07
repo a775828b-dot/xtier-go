@@ -8,9 +8,10 @@ OpenAI-compatible API on `http://127.0.0.1:18400/v1` for other apps (such as DSH
 C++ engine (SGLang / vLLM do not run on the phone); models are ported from vLLM main and checked against vLLM on a
 server.
 
-**Status: early development, not yet run on an Android device.** The engine, the server and the Dory model pack are
-checked against vLLM on an x86 server; the app and the Android / aarch64 builds compile in CI, and the NEON kernels
-are tested under QEMU.
+**Status: early development; short CPU requests now run on the Y900.** The installed app passes kernel/parser,
+file verification, stop/restart and existing HTTP API checks. The checkpoint was verified through a temporary USB
+transfer endpoint; direct mirror access timed out on the current network. DSH client integration, long contexts,
+sustained background operation and GPU inference remain unverified. See the [device report](reports/2026-11-07-y900-bringup.md).
 
 - **vLLM's semantics**: Dory's forward is ported operator by operator from vLLM main (PR #60149); config.json and
   the tokenizer's pre-tokenizer are checked at load, unknown layouts are refused.

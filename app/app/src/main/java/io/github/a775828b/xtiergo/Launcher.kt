@@ -223,6 +223,7 @@ private fun FilesBox(m: LauncherModel, c: Card) {
             for (f in m.files) {
                 val (label, color) = when (f.state) {
                     ModelStore.FileState.Ready -> "就绪" to Palette.ok
+                    ModelStore.FileState.Unverified -> "待校验" to Palette.warn
                     ModelStore.FileState.Downloading -> "下载中 ${gib(f.bytes)} / ${gib(f.size)}" to Palette.accent
                     ModelStore.FileState.Partial -> "不完整 ${gib(f.bytes)} / ${gib(f.size)}" to Palette.warn
                     ModelStore.FileState.Bad -> "大小或校验不对" to Palette.bad
@@ -249,7 +250,7 @@ private fun FilesBox(m: LauncherModel, c: Card) {
                     OutlinedButton(onClick = { m.cancelDownload() }) { Text("停止下载", fontSize = 12.sp) }
                 }
                 !ready -> {
-                    Text("直连下载：域名用 223.5.5.5 解析、连真实地址，不经过系统 DNS 和代理；中断了再点会接着下",
+                    Text("直连下载：使用独立域名解析，不使用系统 HTTP 代理；VPN 仍可能影响连接。中断后可继续",
                         color = Palette.dim, fontSize = 11.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         c.mirrors.forEachIndexed { i, mirror ->
@@ -264,6 +265,9 @@ private fun FilesBox(m: LauncherModel, c: Card) {
                     }
                 }
                 else -> OutlinedButton(onClick = { scope.launch { m.verify() } }) { Text("校验 sha256", fontSize = 12.sp) }
+            }
+            if (!ready && !m.downloading && m.files.any { it.state == ModelStore.FileState.Unverified }) {
+                OutlinedButton(onClick = { scope.launch { m.verify() } }) { Text("校验已有文件", fontSize = 12.sp) }
             }
             if (m.downloadResult.isNotEmpty() && !m.downloading)
                 Text(m.downloadResult, color = if (m.downloadResult.startsWith("下载完成")) Palette.ok else Palette.warn,

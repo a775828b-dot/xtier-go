@@ -9,6 +9,7 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.InetAddress
+import java.net.Proxy
 import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -23,7 +24,8 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object DirectDns : Dns {
     // only IP-literal URLs below, so this client needs no DNS itself
-    private val boot = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(5, TimeUnit.SECONDS).build()
+    private val boot = OkHttpClient.Builder().proxy(Proxy.NO_PROXY)
+        .connectTimeout(5, TimeUnit.SECONDS).readTimeout(5, TimeUnit.SECONDS).build()
     private val cache = ConcurrentHashMap<String, Pair<Long, List<InetAddress>>>()
 
     @Volatile var lastAnswer = ""
@@ -76,6 +78,7 @@ class Downloader(private val store: ModelStore) {
 
     val cancelled = AtomicBoolean(false)
     private val client = OkHttpClient.Builder()
+        .proxy(Proxy.NO_PROXY)
         .dns(DirectDns)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -93,7 +96,14 @@ class Downloader(private val store: ModelStore) {
         for (f in card.files) {
             if (cancelled.get()) return "已停止"
             val dest = File(dir, f.name)
-            if (dest.exists() && dest.length() == f.size) continue
+            if (dest.exists() && dest.length() == f.size) {
+                if (f.sha256 == null) continue
+                onProgress(Progress(f.name, doneFiles.get(), total, 0.0, "校验已有文件…"))
+                val got = sha256(dest)
+                store.markVerified(dest, got)
+                if (got == f.sha256) continue
+                doneFiles.addAndGet(-f.size)
+            }
             dest.delete()
             val url = "$mirror/${card.repo}/resolve/${card.revision}/${f.name}"
             val report = { inFile: Long ->

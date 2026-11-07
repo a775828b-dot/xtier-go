@@ -14,6 +14,8 @@ import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.ServiceCompat
 import org.json.JSONObject
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The model server as a foreground service in its own process (:engine). The launcher starts it with the launch
@@ -40,6 +42,8 @@ class EngineService : Service() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private val commands = Executors.newSingleThreadExecutor()
+    private val generation = AtomicInteger()
     private var wakeLock: PowerManager.WakeLock? = null
     @Volatile private var running = false
     @Volatile private var lastError: String? = null
@@ -56,33 +60,50 @@ class EngineService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopEngine()
-                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                val request = generation.incrementAndGet()
+                commands.execute {
+                    stopEngine()
+                    handler.post {
+                        if (generation.get() == request) {
+                            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                            stopSelfResult(startId)
+                        }
+                    }
+                }
             }
             ACTION_START -> {
                 ensureChannel()
                 ServiceCompat.startForeground(this, NOTIFY_ID, notification("加载中…"),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
                 val config = intent.getStringExtra(EXTRA_CONFIG) ?: return START_NOT_STICKY
-                Thread({
+                val request = generation.incrementAndGet()
+                commands.execute {
                     stopEngine()
+                    if (generation.get() != request) return@execute
                     lastError = Native.start(config)
+                    if (generation.get() != request) {
+                        stopEngine()
+                        return@execute
+                    }
                     if (lastError == null) {
                         running = true
                         acquireWakeLock()
-                        handler.post(tick)
+                        handler.post { if (generation.get() == request) tick.run() }
                     } else {
                         notifyStatus()
                     }
-                }, "xtg-start").start()
+                }
             }
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        stopEngine()
+        generation.incrementAndGet()
+        running = false
+        handler.removeCallbacks(tick)
+        commands.execute { stopEngine() }
+        commands.shutdown()
         super.onDestroy()
     }
 

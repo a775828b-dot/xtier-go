@@ -10,7 +10,7 @@ extern "C" {
    "options": {...pack options...}, "template_kwargs": {...}}. Returns 0, or -1 with a message in err. */
 int xtg_start(const char* config_json, char* err, int err_len);
 
-/* Stop the server and free the model (blocks until the current token is done). */
+/* Stop and free the model. Blocks for loading/current sublayer; call off the UI thread. */
 int xtg_stop(void);
 
 /* The status JSON (as GET /xtg/status). Returns its length; writes at most len - 1 bytes and a terminating 0. */

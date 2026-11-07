@@ -1,0 +1,30 @@
+11-07 18:37:55 [xtg] OpenCL high performance hint: 0
+11-07 18:37:55 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights)
+NVFP4 M=1 N=70 K=256 0.241 ms 0.15 GFLOP/s rms_error=3.2723e-07
+NVFP4 M=2 N=70 K=256 0.324 ms 0.22 GFLOP/s rms_error=2.08896e-06
+NVFP4 M=7 N=70 K=256 0.325 ms 0.77 GFLOP/s rms_error=9.65643e-07
+NVFP4 M=65 N=70 K=256 0.383 ms 6.07 GFLOP/s rms_error=1.38078e-06
+NVFP4 M=512 N=70 K=256 0.811 ms 22.63 GFLOP/s rms_error=1.3064e-06
+11-07 18:37:55 [xtg] OpenCL high performance hint: 0
+11-07 18:37:55 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights)
+NVFP4 M=1 N=7168 K=2560 0.710 ms 51.68 GFLOP/s rms_error=2.24463e-07
+NVFP4 M=2 N=7168 K=2560 7.094 ms 10.35 GFLOP/s rms_error=2.65228e-06
+NVFP4 M=7 N=7168 K=2560 7.500 ms 34.25 GFLOP/s rms_error=6.04331e-06
+NVFP4 M=65 N=7168 K=2560 13.531 ms 176.30 GFLOP/s rms_error=2.08801e-06
+NVFP4 M=512 N=7168 K=2560 56.575 ms 332.13 GFLOP/s rms_error=2.82579e-06
+11-07 18:37:55 [xtg] OpenCL high performance hint: 0
+11-07 18:37:56 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights)
+NVFP4 M=1 N=2560 K=7168 0.682 ms 53.85 GFLOP/s rms_error=2.81131e-07
+NVFP4 M=2 N=2560 K=7168 8.003 ms 9.17 GFLOP/s rms_error=4.02819e-06
+NVFP4 M=7 N=2560 K=7168 8.205 ms 31.31 GFLOP/s rms_error=2.99113e-06
+NVFP4 M=65 N=2560 K=7168 17.258 ms 138.23 GFLOP/s rms_error=5.28361e-06
+NVFP4 M=512 N=2560 K=7168 59.907 ms 313.66 GFLOP/s rms_error=7.06727e-06
+11-07 18:37:56 [xtg] OpenCL high performance hint: 0
+11-07 18:37:56 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights)
+BF16 M=1 N=131072 K=2560 12.615 ms 53.20 GFLOP/s rms_error=3.0567e-07
+BF16 M=2 N=131072 K=2560 126.470 ms 10.61 GFLOP/s rms_error=4.1242e-06
+BF16 M=16 N=131072 K=2560 129.627 ms 82.83 GFLOP/s rms_error=1.82457e-06
+PASS OpenCL real-shape kernels
+neon nvfp4 gemv checked
+all kernel checks passed (neon kernels)
+all parser checks passed

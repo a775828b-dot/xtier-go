@@ -115,6 +115,7 @@ void Runtime::start() {
 
 void Runtime::load() {
   try {
+    if (stopping_.load()) return;
     set_phase("files", "检查文件", 5);
     for (const char* f : {"/config.json", "/tokenizer.json", "/model.safetensors"}) {
       std::ifstream probe(cfg_.model_dir + f);
@@ -137,8 +138,10 @@ void Runtime::load() {
     }
     set_phase("weights", "映射权重", 25);
     model_ = load_model(cfg_.model_dir, cfg_.options, *pool_);
+    if (stopping_.load()) return;
     set_phase("kv", "分配 KV 缓存", 60);
     session_ = model_->new_session();
+    session_->set_cancel_check([this] { return stopping_.load(); });
     if (cfg_.warmup) {
       // reads every weight page once and sizes the work buffers before the first client request
       set_phase("warmup", "预热", 75);
@@ -152,6 +155,7 @@ void Runtime::load() {
       }
       session_->reset();
     }
+    if (stopping_.load()) return;
     engine_ = std::thread([this] { engine_loop(); });
     online_at_ = now_s();
     set_phase("online", "在线", 100);
@@ -173,7 +177,6 @@ void Runtime::stop() {
   queue_cv_.notify_all();
   if (loader_.joinable()) loader_.join();
   if (engine_.joinable()) engine_.join();
-  if (http_) http_->stop();
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     for (auto& j : queue_) {
@@ -185,6 +188,8 @@ void Runtime::stop() {
     }
     queue_.clear();
   }
+  // Wake queued HTTP handlers before joining the HTTP worker pool.
+  if (http_) http_->stop();
   session_.reset();
   model_.reset();
   pool_.reset();
@@ -209,6 +214,10 @@ std::shared_ptr<Job> Runtime::submit(GenRequest r, std::string* why_not) {
   auto job = std::make_shared<Job>(std::move(r));
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
+    if (stopping_.load()) {
+      *why_not = "the model is not online yet: server stopping";
+      return nullptr;
+    }
     if (int(queue_.size()) >= cfg_.max_queue) {
       *why_not = "too many queued requests";
       return nullptr;
@@ -240,6 +249,7 @@ void Runtime::engine_loop() {
       }
     }
     running_.store(true);
+    session_->set_cancel_check([this, job] { return stopping_.load() || job->cancelled.load(); });
     try {
       run(*job);
     } catch (const std::exception& e) {
@@ -253,11 +263,13 @@ void Runtime::engine_loop() {
       job->push(ev);
       log("request failed: %s", e.what());
     }
+    session_->set_cancel_check([this] { return stopping_.load(); });
     running_.store(false);
   }
 }
 
 void Runtime::run(Job& job) {
+  XTG_CHECK(!stopping_.load() && !job.cancelled.load(), "request cancelled");
   GenRequest& r = job.req;
   const int vocab = info().vocab;
   const int64_t m = int64_t(r.prompt.size());
@@ -334,6 +346,7 @@ void Runtime::run(Job& job) {
   std::string text_all;
   std::string finish = "length";
   for (int i = 0; i < r.max_tokens; ++i) {
+    XTG_CHECK(!stopping_.load() && !job.cancelled.load(), "request cancelled");
     int32_t tok = next;
     if (std::find(eos.begin(), eos.end(), tok) != eos.end()) {
       finish = "stop";

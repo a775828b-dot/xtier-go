@@ -38,7 +38,10 @@
   `VLLM_USE_FLASHINFER_SAMPLER=0`；在 worker 里挂钩子要 `VLLM_ALLOW_INSECURE_SERIALIZATION=1`。
 - ssh 里别用 `pgrep -f` / `pkill -f` 按命令行找服务（会匹配到 ssh 自己的 shell），用 pid 文件。
 
-## 安卓（还没做）
+## 安卓（首轮已验证）
+
+Y900 的 NEON 内核、解析器、文件校验、长 prefill 停止/排队请求退出/重启与现有 `api_check.py` 已通过；
+详见 [真机记录](reports/2026-11-07-y900-bringup.md)。不包含 DSH 客户端、长时后台、满 128K/256K 或 GPU 验收。
 
 真机第一步见 [PLAN.md](PLAN.md) 阶段 0：CPU 特性、前台服务所在 cpuset、内存带宽、持续负载温度，NVFP4 GEMV 原型到实测带宽
 的 70%，然后 `adb shell` 里跑 `xtg-server`、电脑上 `adb forward` 后跑上面的接口、照抄、PPL。

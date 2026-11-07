@@ -10,6 +10,7 @@
 #include "xtg/kernels.h"
 #include "xtg/kv.h"
 #include "xtg/model.h"
+#include "xtg/opencl.h"
 #include "xtg/safetensors.h"
 
 namespace xtg::dory {
@@ -111,6 +112,7 @@ Config parse_config(const json& c, const std::string& dir) {
 }
 
 struct Options {
+  bool gpu = false;
   int loops = 1;
   bool per_loop = true;
   KvDtype kv_dtype = KvDtype::FP8;
@@ -121,6 +123,9 @@ struct Options {
 
 Options parse_options(const Config& c, const json& o) {
   Options p;
+  const auto backend = get_str(o, "backend", "cpu");
+  XTG_CHECK(backend == "cpu" || backend == "gpu", "backend: %s (cpu | gpu)", backend.c_str());
+  p.gpu = backend == "gpu";
   p.loops = int(get_int(o, "loops", c.default_loops));
   XTG_CHECK(p.loops >= 1 && p.loops <= 4, "loops: %d (1..4)", p.loops);
   std::string mode = get_str(o, "kv_mode", c.default_kv_mode);
@@ -164,13 +169,17 @@ json estimate(const Config& c, const Options& p, size_t weight_bytes) {
   size_t embed = size_t(c.vocab) * size_t(c.hidden) * 2;
   size_t snaps = size_t(p.snapshots) * ring;
   // the embedding table is mapped but only the rows of seen tokens become resident
-  size_t resident = weight_bytes - embed + full + ring + snaps + work;
+  // Initial GPU backend copies packed weights; count both copies conservatively.
+  size_t gpu_weights = p.gpu ? weight_bytes - embed : 0;
+  size_t gpu_work = p.gpu ? size_t(p.chunk) * (size_t(c.ffn) + 2 * std::max(q + kv, size_t(c.ffn))) * 4 +
+                              16 * size_t(c.vocab) * 4 : 0;
+  size_t resident = weight_bytes - embed + full + ring + snaps + work + gpu_weights + gpu_work;
   return json{{"weights_bytes", weight_bytes},          {"embedding_bytes", embed},
               {"kv_full_bytes", full},                  {"kv_window_bytes", ring},
               {"kv_full_instances", full_inst},          {"kv_window_instances", ring_inst},
               {"kv_bytes_per_token", size_t(full_inst) * kv_row_bytes(c, p.kv_dtype)},
               {"snapshot_bytes", snaps},                {"work_bytes", work},
-              {"resident_bytes", resident}};
+              {"gpu_weight_bytes", gpu_weights}, {"gpu_work_bytes", gpu_work}, {"resident_bytes", resident}};
 }
 
 size_t weights_file_bytes(const std::string& dir) {
@@ -211,6 +220,9 @@ class DoryModel;
 class DorySession : public Session {
  public:
   explicit DorySession(DoryModel& m);
+  ~DorySession() override {
+    if (std::getenv("XTG_GPU_PROFILE")) log("decode attention + KV store: %.6fs", decode_attention_s_);
+  }
   int64_t n_past() const override { return n_; }
   void forward(const int32_t* tokens, int n, Logits want, const LogitsFn& on_logits) override;
   bool rewind(int64_t n) override;
@@ -230,6 +242,7 @@ class DorySession : public Session {
 
   DoryModel& M_;
   int64_t n_ = 0;
+  double decode_attention_s_ = 0;
   std::vector<std::vector<std::unique_ptr<KvCache>>> caches_;   // [attention layer][instance]
   struct Snap {
     int64_t pos = -1;
@@ -288,6 +301,13 @@ class DoryModel : public Model {
       }
       for (float& s : L.lr) s = std::fabs(s * alpha_scale);
     }
+    if (o.gpu) {
+      gpu = std::make_unique<OpenClBackend>();
+      for (const auto& L : layers)
+        for (auto w : {&L.q, &L.k, &L.v, &L.g, &L.o, &L.gate, &L.up, &L.down}) gpu->prepare(*w);
+      gpu->prepare(lm_head);
+      log("OpenCL packed weights: %zu bytes", gpu->weight_bytes());
+    }
     info_.model_type = "dory";
     info_.vocab = c.vocab;
     info_.context = o.context;
@@ -301,7 +321,8 @@ class DoryModel : public Model {
                           {"context", o.context},
                           {"prefill_chunk", o.chunk},
                           {"snapshots", o.snapshots},
-                          {"kernels", kernel_set_name()},
+                          {"kernels", o.gpu ? "opencl-linear+neon" : kernel_set_name()},
+                          {"gpu_device", gpu ? gpu->device_name() : ""},
                           {"threads", pool.size()},
                           {"memory", mem}};
     log("dory: %d layers (%d / %d x %d / %d), %s, %s KV, context %lld, weights mapped in %.2f s", c.layers, c.n_in,
@@ -311,6 +332,14 @@ class DoryModel : public Model {
 
   const ModelInfo& info() const override { return info_; }
   std::unique_ptr<Session> new_session() override { return std::make_unique<DorySession>(*this); }
+  void matmul(const std::vector<const Nvfp4Weight*>& ws, const float* x, int m, const std::vector<float*>& ys) {
+    if (gpu) gpu->matmul(ws, x, m, ys);
+    else matmul_nvfp4(pool, ws, x, m, ys);
+  }
+  void head(const float* x, int m, float* y) {
+    if (gpu) gpu->matmul(lm_head, x, m, y);
+    else matmul_bf16(pool, lm_head, x, m, y);
+  }
 
   Config c;
   Options o;
@@ -321,6 +350,7 @@ class DoryModel : public Model {
   Bf16Weight lm_head;
   std::vector<float> logit_scale;
   ModelInfo info_;
+  std::unique_ptr<OpenClBackend> gpu;
 
  private:
   Nvfp4Weight nvfp4(const std::string& name, int n_out, int k) {
@@ -374,19 +404,20 @@ DorySession::DorySession(DoryModel& m) : M_(m) {
 }
 
 void DorySession::sublayer(const Layer& L, float* x, int m, int64_t pos0, int inst, bool store) {
+  check_cancelled();
   const Config& c = M_.c;
   ThreadPool& pool = M_.pool;
   const int H = c.hidden;
   if (L.kind == kMlp) {
-    matmul_nvfp4(pool, {&L.gate, &L.up}, x, m, {mg_.data(), mu_.data()});
+    M_.matmul({&L.gate, &L.up}, x, m, {mg_.data(), mu_.data()});
     swiglu_scaled(mg_.data(), mu_.data(), L.sg.data(), L.su.data(), m, c.ffn);
     justnorm(mg_.data(), m, c.ffn);
-    matmul_nvfp4(pool, {&L.down}, mg_.data(), m, {ho_.data()});
+    M_.matmul({&L.down}, mg_.data(), m, {ho_.data()});
     slerp_residual(x, ho_.data(), L.lr.data(), m, H);
     return;
   }
   const int Q = c.heads * c.head_dim;
-  matmul_nvfp4(pool, {&L.q, &L.k, &L.v, &L.g}, x, m, {hq_.data(), hk_.data(), hv_.data(), hg_.data()});
+  M_.matmul({&L.q, &L.k, &L.v, &L.g}, x, m, {hq_.data(), hk_.data(), hv_.data(), hg_.data()});
   rope(hq_.data(), m, c.heads, c.head_dim, pos0, L.theta);
   rope(hk_.data(), m, c.kv_heads, c.head_dim, pos0, L.theta);
   // nGPT qk-norm after RoPE: q per head normalized and scaled by (sqk * f)^2, k per head normalized
@@ -410,8 +441,10 @@ void DorySession::sublayer(const Layer& L, float* x, int m, int64_t pos0, int in
   a.v = hv_.data();
   a.cache = &cache;
   a.out = ha_.data();
+  const double attention_started = m == 1 ? now_s() : 0;
   attention(pool, a);
   if (store) cache.store(pos0, m, hk_.data(), hv_.data());
+  if (m == 1) decode_attention_s_ += now_s() - attention_started;
   // output gate (sigmoid, before o_proj), then a norm over all heads
   for (int r = 0; r < m; ++r) {
     float* ar = ha_.data() + size_t(r) * size_t(Q);
@@ -419,7 +452,7 @@ void DorySession::sublayer(const Layer& L, float* x, int m, int64_t pos0, int in
     for (int j = 0; j < Q; ++j) ar[j] *= 1.f / (1.f + std::exp(-gr[j] * L.gscale[size_t(j)]));
   }
   justnorm(ha_.data(), m, Q);
-  matmul_nvfp4(pool, {&L.o}, ha_.data(), m, {ho_.data()});
+  M_.matmul({&L.o}, ha_.data(), m, {ho_.data()});
   slerp_residual(x, ho_.data(), L.lr.data(), m, H);
 }
 
@@ -463,14 +496,16 @@ void DorySession::forward(const int32_t* tokens, int n, Logits want, const Logit
   drop_snapshots_above(n_);
   const int rows_per_head = 16;
   for (int off = 0; off < n; off += M_.o.chunk) {
+    check_cancelled();
     int m = std::min(M_.o.chunk, n - off);
     run_chunk(tokens + off, m, n_);
     n_ += m;
     int r0 = want == Logits::All ? 0 : (want == Logits::Last && off + m == n ? m - 1 : m);
     for (int r = r0; r < m; r += rows_per_head) {
+      check_cancelled();
       int rows = std::min(rows_per_head, m - r);
       logits_.resize(size_t(rows) * size_t(c.vocab));
-      matmul_bf16(M_.pool, M_.lm_head, x_.data() + size_t(r) * size_t(c.hidden), rows, logits_.data());
+      M_.head(x_.data() + size_t(r) * size_t(c.hidden), rows, logits_.data());
       for (int i = 0; i < rows; ++i) {
         float* lg = logits_.data() + size_t(i) * size_t(c.vocab);
         for (int j = 0; j < c.vocab; ++j) lg[j] *= M_.logit_scale[size_t(j)];

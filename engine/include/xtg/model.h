@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@ using LogitsFn = std::function<void(int row, const float* logits)>;
 class Session {
  public:
   virtual ~Session() = default;
+  void set_cancel_check(std::function<bool()> check) { cancel_check_ = std::move(check); }
   virtual int64_t n_past() const = 0;
   // Run n tokens at positions n_past() .. n_past() + n - 1 (any length; the pack cuts it into prefill chunks).
   virtual void forward(const int32_t* tokens, int n, Logits want, const LogitsFn& on_logits) = 0;
@@ -44,6 +46,14 @@ class Session {
   virtual int snapshot_slots() const = 0;
   virtual void reset() = 0;
   virtual size_t kv_bytes() const = 0;                // resident estimate
+
+ protected:
+  void check_cancelled() const {
+    if (cancel_check_ && cancel_check_()) throw std::runtime_error("request cancelled");
+  }
+
+ private:
+  std::function<bool()> cancel_check_;
 };
 
 class Model {

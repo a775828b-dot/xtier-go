@@ -1,0 +1,114 @@
+[
+  {
+    "repeat": 8,
+    "wall_s": 32.90600000000268,
+    "usage": {
+      "prompt_tokens": 133,
+      "completion_tokens": 64,
+      "total_tokens": 197,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "message": {
+      "role": "assistant",
+      "content": "Here is a detailed English checklist for testing your local inference Android tablet application:\n\n**Functional & Core Logic Testing**\n*   **Model Loading:** Verify the model loads correctly from the local storage (e.g., internal storage or SD card) without requiring an internet connection.\n*   **Inference Execution:** Test the core"
+    },
+    "telemetry": {
+      "decode_tok_s": 4.376142360356981,
+      "last_decode_tok_s": 4.376142360356981,
+      "last_prefill_tok_s": 7.188720811782081,
+      "requests": 1,
+      "prompt_tokens_total": 133,
+      "generation_tokens_total": 64,
+      "cached_tokens_total": 0,
+      "last": {
+        "prompt_tokens": 133,
+        "cached_tokens": 0,
+        "completion_tokens": 64,
+        "prefill_s": 18.501205357984873,
+        "decode_s": 14.396240984002361,
+        "prefill_tok_s": 7.188720811782081,
+        "decode_tok_s": 4.376142360356981,
+        "finish": "length"
+      },
+      "running": false,
+      "queued": 0,
+      "rss_bytes": 2887213056
+    },
+    "config": {
+      "model_dir": "/storage/emulated/0/Android/data/io.github.a775828b.xtiergo/files/models/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4",
+      "host": "127.0.0.1",
+      "port": 18400,
+      "served": "dory",
+      "threads": 8,
+      "options": {
+        "loops": "2",
+        "context": "131072",
+        "kv_mode": "last_loop",
+        "kv_dtype": "fp8"
+      },
+      "template_kwargs": {
+        "medium_effort": false,
+        "truncate_history_thinking": true
+      },
+      "api_key_set": false
+    }
+  },
+  {
+    "repeat": 24,
+    "wall_s": 65.95300000000861,
+    "usage": {
+      "prompt_tokens": 325,
+      "completion_tokens": 64,
+      "total_tokens": 389,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "message": {
+      "role": "assistant",
+      "content": "Here is a detailed English checklist for testing your local inference Android tablet application:\n\n**Functional & Core Logic Testing**\n1. **Model Loading & Initialization**: Verify the model loads correctly on the device without network dependency. Test startup time to ensure it meets performance expectations.\n2. **Inference Execution**: Confirm that input"
+    },
+    "telemetry": {
+      "decode_tok_s": 3.677324202779149,
+      "last_decode_tok_s": 3.677324202779149,
+      "last_prefill_tok_s": 6.658498079270735,
+      "requests": 2,
+      "prompt_tokens_total": 458,
+      "generation_tokens_total": 128,
+      "cached_tokens_total": 0,
+      "last": {
+        "prompt_tokens": 325,
+        "cached_tokens": 0,
+        "completion_tokens": 64,
+        "prefill_s": 48.809806075005326,
+        "decode_s": 17.132022233010503,
+        "prefill_tok_s": 6.658498079270735,
+        "decode_tok_s": 3.677324202779149,
+        "finish": "length"
+      },
+      "running": false,
+      "queued": 0,
+      "rss_bytes": 2902388736
+    },
+    "config": {
+      "model_dir": "/storage/emulated/0/Android/data/io.github.a775828b.xtiergo/files/models/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4",
+      "host": "127.0.0.1",
+      "port": 18400,
+      "served": "dory",
+      "threads": 8,
+      "options": {
+        "loops": "2",
+        "context": "131072",
+        "kv_mode": "last_loop",
+        "kv_dtype": "fp8"
+      },
+      "template_kwargs": {
+        "medium_effort": false,
+        "truncate_history_thinking": true
+      },
+      "api_key_set": false
+    }
+  }
+]

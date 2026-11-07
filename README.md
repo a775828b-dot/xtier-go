@@ -2,12 +2,16 @@
 
 [English](docs/README.en.md) · [文档目录](docs/README.md) · [架构](docs/architecture.md) · [计划](docs/PLAN.md)
 
+**GPU 审阅快照（非发布版）：** [实现、完整测试数据与退化情况](docs/reports/2026-11-07-gpu-review-snapshot.md)。
+命令行已有 OpenCL 线性层原型；同条件 prefill 约 2.56 倍，decode 反而约慢 28%，启动台 GPU 仍禁用。
+
 XTier Go 是 [XTier](https://github.com/a775828b-dot/xtier) 给安卓手机和平板的一支：装在手机上的 App，打开是启动台，选模型和
 启动选项后在本机起推理服务，其他 App（比如 DSH Go X）经 `http://127.0.0.1:18400/v1` 调用 OpenAI 兼容接口。推理核心是自己的
 C++ 引擎（手机上不跑 SGLang / vLLM），模型照 vLLM main 的实现移植，在服务器上用 vLLM 对照验收。
 
-**状态：早期开发，还没在安卓设备上跑过。** 引擎、服务和 Dory 模型包已在 x86 服务器上对照 vLLM 验证（见下表）；App 和
-Android / aarch64 构建由 CI 编译，NEON 内核在 QEMU 下测过。真机测试是下一步（[计划](docs/PLAN.md)）。
+**状态：早期开发，已在 Y900 上跑通 CPU 短请求。** App 安装、NEON/解析器、文件校验、长请求停止/重启以及现有 HTTP 接口验收通过；
+模型经临时 USB 本地通道导入并校验，当前网络下独立镜像下载超时。DSH 客户端、长上下文、持续后台和 GPU 尚未验收。
+服务器对照见下表，真机记录见 [Y900 首轮验证](docs/reports/2026-11-07-y900-bringup.md)。
 
 - **语义照 vLLM**：Dory 的前向照 vLLM main（PR #60149）逐个算子移植；加载时核对 config.json 和分词规则，不认识就拒绝启动。
 - **权重原样用**：NVFP4（E2M1 + E4M3 块缩放）直接从 safetensors mmap 出来算，不重新量化；E2M1 的 8 个幅值乘 2 都是整数，
@@ -61,13 +65,13 @@ curl http://127.0.0.1:18400/v1/chat/completions -H 'Content-Type: application/js
 
 | 模型 | 模块 | 状态 |
 |---|---|---|
-| [Nemotron-Labs Dory 1.0 4B NVFP4](https://huggingface.co/nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4) | `packs/dory` | 服务器 x86 上对照通过（下表）；安卓未测 |
+| [Nemotron-Labs Dory 1.0 4B NVFP4](https://huggingface.co/nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4) | `packs/dory` | 服务器对照通过；Y900 CPU 短请求和接口通过，长上下文未验收 |
 
 ## 支持的设备
 
 | 设备 | 状态 |
 |---|---|
-| 联想 Y900（Snapdragon 8 Elite，SM8750P，16 GB，Android 16） | 目标设备，**未实测**；NEON 内核在 QEMU 下与通用内核一致 |
+| 联想 Y900（Snapdragon 8 Elite，SM8750P，16 GB，Android 16） | CPU 短请求、NEON 内核、解析器和启停回归通过；GPU、长时后台未验收 |
 | x86-64 Linux | 开发和对照用（只有通用内核，不追求速度） |
 
 ## 上下文与内存（Dory，2 次循环，常驻估算）

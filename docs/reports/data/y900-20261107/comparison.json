@@ -1,0 +1,9 @@
+{
+  "logits_max": 0.49802136421203613,
+  "logits_mean": 0.002745024859905243,
+  "logprob_mean": 3.3273194965563325e-05,
+  "argmax_agreement": 1.0,
+  "cpu_seconds": 13.776531973009696,
+  "gpu_seconds": 10.920205933012767,
+  "tokens": 96
+}
