@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -30,13 +31,35 @@ LaunchConfig LaunchConfig::from_json(const json& j) {
   c.template_kwargs = j.value("template_kwargs", json::object());
   c.max_queue = j.value("max_queue", c.max_queue);
   c.warmup = j.value("warmup", true);
+  c.spec_k = std::clamp(j.value("spec_k", 0), 0, 16);
+  c.spec_ngram = std::clamp(j.value("spec_ngram", 3), 1, 8);
   return c;
 }
 
 json LaunchConfig::to_json() const {
   return json{{"model_dir", model_dir}, {"host", host},       {"port", port},
               {"served", served},       {"threads", threads}, {"options", options},
-              {"template_kwargs", template_kwargs},          {"api_key_set", !api_key.empty()}};
+              {"template_kwargs", template_kwargs},          {"api_key_set", !api_key.empty()},
+              {"spec_k", spec_k},       {"spec_ngram", spec_ngram}};
+}
+
+// --- speculative decoding ---
+
+// Prompt lookup: up to k tokens that followed the latest earlier occurrence of the last n tokens of ctx + [last],
+// n from ngram down to 2 (one matching token proposes too much that the verify step throws away).
+std::vector<int32_t> lookup_draft(const std::vector<int32_t>& ctx, int32_t last, int k, int ngram) {
+  const int64_t len = int64_t(ctx.size()) + 1;
+  auto at = [&](int64_t i) { return i < int64_t(ctx.size()) ? ctx[size_t(i)] : last; };
+  for (int64_t n = std::min<int64_t>(ngram, len - 1); n >= 2; --n)
+    for (int64_t s = len - n - 1; s >= 0; --s) {
+      bool same = true;
+      for (int64_t j = 0; j < n && same; ++j) same = at(s + j) == at(len - n + j);
+      if (!same) continue;
+      std::vector<int32_t> d;
+      for (int64_t p = s + n; p < len && int(d.size()) < k; ++p) d.push_back(at(p));
+      if (!d.empty()) return d;
+    }
+  return {};
 }
 
 // --- jobs ---
@@ -345,9 +368,14 @@ void Runtime::run(Job& job) {
   std::vector<int32_t> out_ids;
   std::string text_all;
   std::string finish = "length";
+  // tokens chosen but not emitted yet: the next sample, or the drafts a verify step accepted (already in the KV
+  // cache) and the target's token after them
+  std::deque<int32_t> pending{next};
+  int64_t steps = 0, drafted = 0, accepted = 0;
   for (int i = 0; i < r.max_tokens; ++i) {
     XTG_CHECK(!stopping_.load() && !job.cancelled.load(), "request cancelled");
-    int32_t tok = next;
+    int32_t tok = pending.front();
+    pending.pop_front();
     if (std::find(eos.begin(), eos.end(), tok) != eos.end()) {
       finish = "stop";
       break;
@@ -382,8 +410,34 @@ void Runtime::run(Job& job) {
       break;
     }
     if (i + 1 == r.max_tokens) break;
-    session_->forward(&tok, 1, Logits::Last, [&](int, const float* lg) { next = sampler.sample(lg, vocab, r.sampling); });
-    cached_.push_back(tok);
+    if (!pending.empty()) continue;   // an accepted draft: its KV is in the cache already
+    // tok goes in, followed by prompt-lookup drafts when speculative decoding is on (no more than the limit leaves)
+    std::vector<int32_t> in{tok};
+    const int k = std::min(cfg_.spec_k, r.max_tokens - i - 2);
+    if (k > 0) {
+      std::vector<int32_t> d = lookup_draft(cached_, tok, k, cfg_.spec_ngram);
+      in.insert(in.end(), d.begin(), d.end());
+    }
+    const int64_t base = session_->n_past();
+    // row j predicts the token after in[j]; it counts only while every earlier draft was accepted. Sampling the
+    // target and keeping a draft only when the sample equals it is exact rejection sampling for a fixed draft.
+    std::vector<int32_t> got;
+    session_->forward(in.data(), int(in.size()), in.size() > 1 ? Logits::All : Logits::Last, [&](int row, const float* lg) {
+      if (int(got.size()) == row && (row == 0 || got.back() == in[size_t(row)]))
+        got.push_back(sampler.sample(lg, vocab, r.sampling));
+    });
+    size_t n_acc = 0;
+    while (n_acc + 1 < in.size() && n_acc < got.size() && got[n_acc] == in[n_acc + 1]) ++n_acc;
+    cached_.insert(cached_.end(), in.begin(), in.begin() + std::ptrdiff_t(n_acc + 1));
+    if (in.size() > 1) {
+      XTG_CHECK(session_->rewind(base + 1 + int64_t(n_acc)), "speculative decoding: cannot drop %zu rejected drafts",
+                in.size() - 1 - n_acc);
+      ++steps;
+      drafted += int64_t(in.size()) - 1;
+      accepted += int64_t(n_acc);
+    }
+    pending.assign(in.begin() + 1, in.begin() + std::ptrdiff_t(n_acc + 1));
+    pending.push_back(got[n_acc]);
   }
   double t2 = now_s();
   Event done;
@@ -416,9 +470,13 @@ void Runtime::run(Job& job) {
     if (todo > 0 && t1 > t0) last_prefill_tok_s_ = double(todo) / (t1 - t0);
     if (out_ids.size() > 1 && t2 > t1) last_decode_tok_s_ = double(out_ids.size() - 1) / (t2 - t1);
     last_end_ = t2;
+    spec_steps_ += steps;
+    spec_drafted_ += drafted;
+    spec_accepted_ += accepted;
     last_ = json{{"prompt_tokens", m},        {"cached_tokens", reuse},           {"completion_tokens", out_ids.size()},
                  {"prefill_s", t1 - t0},      {"decode_s", t2 - t1},             {"prefill_tok_s", last_prefill_tok_s_},
-                 {"decode_tok_s", last_decode_tok_s_}, {"finish", finish}};
+                 {"decode_tok_s", last_decode_tok_s_}, {"finish", finish},
+                 {"spec", {{"steps", steps}, {"drafted", drafted}, {"accepted", accepted}}}};
   }
   log("request: prompt %lld (cached %lld), %zu generated, prefill %.1f tok/s, decode %.1f tok/s, %s", (long long)m,
       (long long)reuse, out_ids.size(), todo > 0 ? double(todo) / std::max(1e-9, t1 - t0) : 0.0,
@@ -463,6 +521,9 @@ json Runtime::status() const {
     t["generation_tokens_total"] = gen_tokens_;
     t["cached_tokens_total"] = cached_tokens_;
     t["last"] = last_;
+    // speculative decoding so far: tokens per verify step = 1 + accepted / steps
+    t["spec"] = json{{"k", cfg_.spec_k}, {"steps", spec_steps_}, {"drafted", spec_drafted_}, {"accepted", spec_accepted_},
+                     {"tokens_per_step", spec_steps_ > 0 ? 1.0 + double(spec_accepted_) / double(spec_steps_) : 0.0}};
   }
   t["running"] = running_.load();
   {

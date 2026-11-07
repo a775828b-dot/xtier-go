@@ -20,6 +20,10 @@ namespace {
 
 enum Kind { kMlp = 0, kSliding = 1, kFull = 2 };
 
+// sliding-window rings keep this many positions beyond the window, so a session can rewind up to kRewindSlack + 1
+// positions (speculative decoding drops the rejected drafts) without a snapshot
+constexpr int kRewindSlack = 16;
+
 struct Config {
   int hidden = 0, ffn = 0, heads = 0, kv_heads = 0, head_dim = 0, vocab = 0, layers = 0;
   int n_in = 0, n_rec = 0, n_out = 0, window = 0, default_loops = 1;
@@ -163,7 +167,7 @@ json estimate(const Config& c, const Options& p, size_t weight_bytes) {
       full += size_t(inst) * size_t(p.context) * kv_row_bytes(c, p.kv_dtype);
     } else {
       ring_inst += inst;
-      ring += size_t(inst) * size_t(c.window) * kv_row_bytes(c, p.kv_dtype);
+      ring += size_t(inst) * size_t(c.window + kRewindSlack) * kv_row_bytes(c, p.kv_dtype);
     }
   }
   size_t q = size_t(c.heads) * size_t(c.head_dim), kv = size_t(c.kv_heads) * size_t(c.head_dim);
@@ -438,7 +442,7 @@ DorySession::DorySession(DoryModel& m) : M_(m) {
     caches_.emplace_back();
     for (int i = 0; i < inst; ++i)
       caches_.back().push_back(std::make_unique<KvCache>(c.kv_heads, c.head_dim, m.o.context,
-                                                         L.kind == kSliding ? c.window : 0, m.o.kv_dtype));
+                                                         L.kind == kSliding ? c.window + kRewindSlack : 0, m.o.kv_dtype));
   }
   snaps_.resize(size_t(m.o.snapshots));
   const size_t ch = size_t(m.o.chunk), H = size_t(c.hidden), Q = size_t(c.heads) * size_t(c.head_dim),
@@ -571,9 +575,9 @@ void DorySession::forward(const int32_t* tokens, int n, Logits want, const Logit
 bool DorySession::rewind(int64_t n) {
   if (n == n_) return true;
   if (n > n_ || n < 0) return false;
-  // a ring of `window` slots still holds what position n needs when it lost at most the newest position
+  // a ring of window + slack slots still holds what position n needs when it lost at most slack + 1 positions
   bool rings = M_.c.window > 0 && std::count(M_.c.kind.begin(), M_.c.kind.end(), int(kSliding)) > 0;
-  if (rings && n_ > M_.c.window && n < n_ - 1) return false;
+  if (rings && n_ > M_.c.window + kRewindSlack && n < n_ - kRewindSlack - 1) return false;
   n_ = n;
   drop_snapshots_above(n);
   return true;
@@ -846,7 +850,7 @@ GpuDorySession::GpuDorySession(DoryModel& m) : M_(m), G_(*m.gpu) {
       for (int i = 0; i < inst; ++i) {
         Cache k;
         k.ring = L.kind == kSliding;
-        k.slots = k.ring ? c.window : m.o.context;
+        k.slots = k.ring ? c.window + kRewindSlack : m.o.context;
         k.k = G_.alloc(size_t(k.slots) * KV);
         k.v = G_.alloc(size_t(k.slots) * KV);
         k.ks = G_.alloc(size_t(k.slots) * size_t(c.kv_heads) * 4);
@@ -998,7 +1002,7 @@ bool GpuDorySession::rewind(int64_t n) {
   if (n == n_) return true;
   if (n > n_ || n < 0) return false;
   bool rings = M_.c.window > 0 && std::count(M_.c.kind.begin(), M_.c.kind.end(), int(kSliding)) > 0;
-  if (rings && n_ > M_.c.window && n < n_ - 1) return false;
+  if (rings && n_ > M_.c.window + kRewindSlack && n < n_ - kRewindSlack - 1) return false;
   n_ = n;
   drop_snapshots_above(n);
   return true;

@@ -2,9 +2,13 @@
 //
 //   xtg-server --model DIR [--host 127.0.0.1] [--port 18400] [--served dory] [--threads N] [--cpus 0-7]
 //              [--api-key KEY] [--opt key=value ...] [--kwarg key=value ...] [--no-warmup]
+//              [--spec-k K] [--spec-ngram N]
 //
 // --opt: the pack's launch options (Dory: loops, kv_mode, kv_dtype, context, prefill_chunk, snapshots);
 // --kwarg: chat_template_kwargs defaults (Dory: medium_effort=true, truncate_history_thinking=false).
+// --spec-k: speculative decoding with up to K prompt-lookup drafts per step (0, the default: off; at most 16),
+// matching the last N (default 3) down to 2 tokens.
+#include <algorithm>
 #include <csignal>
 #include <cstdio>
 #include <string>
@@ -61,6 +65,10 @@ int main(int argc, char** argv) {
         cfg.threads = std::stoi(v);
       else if (k == "--cpus")
         cfg.cpus = cpu_list(v);
+      else if (k == "--spec-k")
+        cfg.spec_k = std::clamp(std::stoi(v), 0, 16);
+      else if (k == "--spec-ngram")
+        cfg.spec_ngram = std::clamp(std::stoi(v), 2, 8);
       else if (k == "--api-key")
         cfg.api_key = v;
       else if (k == "--opt" || k == "--kwarg") {

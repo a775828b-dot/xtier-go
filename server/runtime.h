@@ -34,6 +34,8 @@ struct LaunchConfig {
   json template_kwargs = json::object();   // defaults under each request's chat_template_kwargs
   int max_queue = 8;
   bool warmup = true;
+  int spec_k = 0;                 // speculative decoding: up to this many prompt-lookup drafts per step (0: off)
+  int spec_ngram = 3;             // the longest suffix the drafter matches
 
   static LaunchConfig from_json(const json& j);
   json to_json() const;
@@ -139,6 +141,7 @@ class Runtime {
   mutable std::mutex stats_mutex_;
   double last_decode_tok_s_ = 0, last_prefill_tok_s_ = 0, last_end_ = 0;
   int64_t requests_ = 0, prompt_tokens_ = 0, gen_tokens_ = 0, cached_tokens_ = 0;
+  int64_t spec_steps_ = 0, spec_drafted_ = 0, spec_accepted_ = 0;   // verify steps, draft tokens, accepted ones
   json last_ = json::object();
 };
 

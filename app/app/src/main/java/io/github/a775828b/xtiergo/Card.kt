@@ -71,12 +71,16 @@ data class Card(
         val options = JSONObject()
         val kwargs = JSONObject()
         var threads = 0
+        var specK = 0
         for (o in this.options) {
             val v = values[o.key] ?: o.default
             when (o.target) {
                 "option" -> options.put(o.key, v)
                 "kwarg" -> kwargs.put(o.kwarg ?: o.key, o.map?.opt(v) ?: v)
-                "launch" -> if (o.key == "threads") threads = v.toIntOrNull() ?: 0
+                "launch" -> when (o.key) {
+                    "threads" -> threads = v.toIntOrNull() ?: 0
+                    "spec_k" -> specK = v.toIntOrNull() ?: 0
+                }
             }
         }
         return JSONObject()
@@ -85,6 +89,7 @@ data class Card(
             .put("port", port)
             .put("served", served)
             .put("threads", threads)
+            .put("spec_k", specK)
             .put("options", options)
             .put("template_kwargs", kwargs)
     }
