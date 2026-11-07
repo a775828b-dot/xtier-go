@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <cstring>
 #include <map>
 #include <unordered_map>
 
@@ -186,6 +187,47 @@ __kernel void gemm16(__global const ushort*w,__global const float*x,__global flo
     for(int i=0;i<4;i++){float4 r=i==0?r0:i==1?r1:i==2?r2:r3;
         if(row+i<M){size_t dst=offset+(size_t)(row+i)*N+col; if(col<N)y[dst]=r.x; if(col+1<N)y[dst+1]=r.y; if(col+2<N)y[dst+2]=r.z; if(col+3<N)y[dst+3]=r.w;}}
 }
+// The prefill GEMM in T precision (half where the device has cl_khr_fp16, else float): a 64 x 128 tile per 256
+// work-items, each 4 rows x 8 columns; the FP32 activations become T on their way into local memory and NVFP4 is
+// decoded once per tile; T products summed per 32-k step, those sums added in FP32. N must be a multiple of 128.
+#ifdef cl_khr_fp16
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+typedef half T; typedef half8 T8;
+#define TO_T8 convert_half8
+#else
+typedef float T; typedef float8 T8;
+#define TO_T8 convert_float8
+#endif
+__kernel void gemmt(__global const uchar*c,__global const uchar*s,__global const float*A,__global float*C,
+                    int K,int N,int M,float scale,int offset){
+    __local T As[64][32+2];
+    __local T Bs[32][128];
+    const int tid=get_local_id(0),tm=tid/16,tn=tid%16,m0=get_group_id(1)*64,n0=get_group_id(0)*128;
+    float8 acc0=0,acc1=0,acc2=0,acc3=0;
+    for(int k0=0;k0<K;k0+=32){
+        {int r=tid/4,kk=(tid%4)*8;
+         float8 a=m0+r<M?vload8(0,A+(size_t)(m0+r)*K+k0+kk):(float8)0;
+         vstore8(TO_T8(a),0,&As[r][kk]);}
+        {int r=tid/2,h=(tid%2)*16,n=n0+r;
+         uint2 q=vload2(0,(__global const uint*)(c+(size_t)n*(K/2)+(k0+h)/2));
+         float sc=fp8(s[(size_t)n*(K/16)+(k0+h)/16]);
+         float4 w0=unpack4(q.x)*sc,w1=unpack4(q.x>>16)*sc,w2=unpack4(q.y)*sc,w3=unpack4(q.y>>16)*sc;
+         float wv[16]={w0.x,w0.y,w0.z,w0.w,w1.x,w1.y,w1.z,w1.w,w2.x,w2.y,w2.z,w2.w,w3.x,w3.y,w3.z,w3.w};
+         for(int i=0;i<16;i++)Bs[h+i][r]=(T)wv[i];}
+        barrier(CLK_LOCAL_MEM_FENCE);
+        T8 p0=0,p1=0,p2=0,p3=0;
+        for(int k=0;k<32;k++){
+            T8 b=vload8(0,&Bs[k][tn*8]);
+            p0=mad((T8)As[tm*4][k],b,p0);p1=mad((T8)As[tm*4+1][k],b,p1);
+            p2=mad((T8)As[tm*4+2][k],b,p2);p3=mad((T8)As[tm*4+3][k],b,p3);
+        }
+        acc0+=convert_float8(p0);acc1+=convert_float8(p1);acc2+=convert_float8(p2);acc3+=convert_float8(p3);
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float8 acc[4]={acc0,acc1,acc2,acc3};
+    for(int i=0;i<4;i++){int m=m0+tm*4+i;
+        if(m<M)vstore8(acc[i]*scale,0,C+offset+(size_t)m*N+n0+tn*8);}
+}
 )CLC";
 }  // namespace
 
@@ -232,7 +274,9 @@ struct OpenClBackend::Impl {
   cl_context context = nullptr;
   cl_command_queue queue = nullptr;
   cl_program program = nullptr;
-  cl_kernel gemv4 = nullptr, gemm4 = nullptr, gemv16 = nullptr, gemm16 = nullptr, gemvm = nullptr, gemv16m = nullptr;
+  cl_kernel gemv4 = nullptr, gemm4 = nullptr, gemv16 = nullptr, gemm16 = nullptr, gemvm = nullptr, gemv16m = nullptr,
+            gemmt = nullptr;
+  bool fp16 = false, use_gemmt = true;   // the device has cl_khr_fp16; XTG_GEMM=fp32 keeps gemm4 for prefill
   cl_mem input = nullptr, output = nullptr;
   size_t input_size = 0, output_size = 0, weight_size = 0;
   double decode_nv_s = 0, decode_bf_s = 0;
@@ -263,7 +307,7 @@ struct OpenClBackend::Impl {
     }
     if (input) clReleaseMemObject(input);
     if (output) clReleaseMemObject(output);
-    for (auto k : {gemv4, gemm4, gemv16, gemm16, gemvm, gemv16m})
+    for (auto k : {gemv4, gemm4, gemv16, gemm16, gemvm, gemv16m, gemmt})
       if (k) clReleaseKernel(k);
     for (auto& [key, k] : kernels) clReleaseKernel(k);
     for (auto& [key, p] : programs) clReleaseProgram(p);
@@ -320,7 +364,14 @@ struct OpenClBackend::Impl {
     gemm16 = create("gemm16");
     gemvm = create("gemvm");
     gemv16m = create("gemv16m");
-    log("OpenCL device: %s (FP32 accumulation, packed weights)", name.c_str());
+    gemmt = create("gemmt");
+    char ext[8192] = {};
+    clGetDeviceInfo(device, CL_DEVICE_EXTENSIONS, sizeof(ext) - 1, ext, nullptr);
+    fp16 = std::strstr(ext, "cl_khr_fp16") != nullptr;
+    const char* gm = std::getenv("XTG_GEMM");
+    use_gemmt = !(gm && std::string(gm) == "fp32");
+    log("OpenCL device: %s (FP32 accumulation, packed weights; prefill GEMM %s)", name.c_str(),
+        use_gemmt ? (fp16 ? "FP16 tiles" : "FP32 tiles") : "gemm4");
   }
   cl_mem copy(const void* data, size_t bytes) {
     cl_int e;
@@ -581,16 +632,24 @@ void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, Mem x, int
   size_t offset = y_offset;
   for (auto w : ws) {
     auto b = p.weights.at(w->codes);
-    p.arg(p.gemm4, 0, b.codes);
-    p.arg(p.gemm4, 1, b.scales);
-    p.arg(p.gemm4, 2, x);
-    p.arg(p.gemm4, 3, y);
-    p.arg(p.gemm4, 4, K);
-    p.arg(p.gemm4, 5, w->n_out);
-    p.arg(p.gemm4, 6, m);
-    p.arg(p.gemm4, 7, w->global);
-    p.arg(p.gemm4, 8, int(offset));
-    p.dispatch(p.gemm4, m, w->n_out);
+    // the tile GEMM where the shape fits it (every Dory projection), else the 64 x 64 FP32 one
+    const bool tiles = p.use_gemmt && w->n_out % 128 == 0 && K % 32 == 0;
+    cl_kernel k = tiles ? p.gemmt : p.gemm4;
+    p.arg(k, 0, b.codes);
+    p.arg(k, 1, b.scales);
+    p.arg(k, 2, x);
+    p.arg(k, 3, y);
+    p.arg(k, 4, K);
+    p.arg(k, 5, w->n_out);
+    p.arg(k, 6, m);
+    p.arg(k, 7, w->global);
+    p.arg(k, 8, int(offset));
+    if (tiles) {
+      size_t global[2] = {size_t(w->n_out / 128) * 256, size_t((m + 63) / 64)}, local[2] = {256, 1};
+      check(p.clEnqueueNDRangeKernel(p.queue, k, 2, nullptr, global, local, 0, nullptr, p.event_for(k)), "dispatch");
+    } else {
+      p.dispatch(k, m, w->n_out);
+    }
     offset += size_t(m) * size_t(w->n_out);
   }
 }
