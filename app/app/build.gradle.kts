@@ -16,6 +16,10 @@ android {
         versionCode = 1
         versionName = "0.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // -PxtgAppIdSuffix=.dev: a development build next to the installed app (other signing key, own data)
+        val suffix = providers.gradleProperty("xtgAppIdSuffix").getOrElse("")
+        applicationIdSuffix = suffix.ifEmpty { null }
+        manifestPlaceholders["appLabel"] = if (suffix.isEmpty()) "XTier Go" else "XTier Go$suffix"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild {
             cmake {
