@@ -1,0 +1,14 @@
+11-07 21:34:23 [xtg] GPU decode: NVFP4 0.000000s/0 calls, BF16 0.000000s/0 calls
+11-07 21:34:23 [xtg] GPU kernel add_norm        13.699 ms    1604 launches   0.0%
+11-07 21:34:23 [xtg] GPU kernel attend       26931.949 ms     112 launches  21.9%
+11-07 21:34:23 [xtg] GPU kernel attend_merge   252.013 ms   22344 launches   0.2%
+11-07 21:34:23 [xtg] GPU kernel attend_split 22445.521 ms   22344 launches  18.3%
+11-07 21:34:23 [xtg] GPU kernel gate_norm      366.737 ms   22456 launches   0.3%
+11-07 21:34:23 [xtg] GPU kernel gemmt        17831.769 ms     896 launches  14.5%
+11-07 21:34:23 [xtg] GPU kernel gemv16        4518.917 ms     400 launches   3.7%
+11-07 21:34:23 [xtg] GPU kernel gemv4        48830.277 ms   89376 launches  39.8%
+11-07 21:34:23 [xtg] GPU kernel kv_store       134.866 ms   22456 launches   0.1%
+11-07 21:34:23 [xtg] GPU kernel rope_norm      194.485 ms   44912 launches   0.2%
+11-07 21:34:23 [xtg] GPU kernel slerp          673.964 ms   44912 launches   0.5%
+11-07 21:34:23 [xtg] GPU kernel swiglu_norm    602.878 ms   22456 launches   0.5%
+11-07 21:34:23 [xtg] GPU kernels total 122797.075 ms

@@ -1,0 +1,19 @@
+11-07 21:21:24 [xtg] OpenCL high performance hint: 0
+11-07 21:21:25 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights; prefill GEMM FP16 tiles)
+11-07 21:21:26 [xtg] OpenCL packed weights: 2529034240 bytes
+11-07 21:21:26 [xtg] dory: 72 layers (16 / 40 x 2 / 16), last_loop, fp8 KV, context 4096, weights mapped in 1.34 s
+11-07 21:21:42 [xtg] GPU decode: NVFP4 0.000000s/0 calls, BF16 0.000000s/0 calls
+11-07 21:21:42 [xtg] GPU kernel add_norm         1.484 ms     132 launches   0.0%
+11-07 21:21:42 [xtg] GPU kernel attend        3022.191 ms      56 launches  20.2%
+11-07 21:21:42 [xtg] GPU kernel attend_merge     5.670 ms    1792 launches   0.0%
+11-07 21:21:42 [xtg] GPU kernel attend_split   654.365 ms    1792 launches   4.4%
+11-07 21:21:42 [xtg] GPU kernel gate_norm       43.171 ms    1848 launches   0.3%
+11-07 21:21:42 [xtg] GPU kernel gemmt         6897.239 ms     448 launches  46.0%
+11-07 21:21:42 [xtg] GPU kernel gemv16         373.071 ms      33 launches   2.5%
+11-07 21:21:42 [xtg] GPU kernel gemv4         3807.616 ms    7168 launches  25.4%
+11-07 21:21:42 [xtg] GPU kernel kv_store        10.174 ms    1188 launches   0.1%
+11-07 21:21:42 [xtg] GPU kernel rope_norm       23.892 ms    3696 launches   0.2%
+11-07 21:21:42 [xtg] GPU kernel slerp           72.882 ms    3696 launches   0.5%
+11-07 21:21:42 [xtg] GPU kernel swiglu_norm     74.400 ms    1848 launches   0.5%
+11-07 21:21:42 [xtg] GPU kernels total 14986.156 ms
+{"ids":[1934,1261,11530,6628,56455,1046,1032,23196,4392,11449,10437,1139,84720,1320,1013,1010,1065,3685,31587,5510,2715,33972,3244,14780,3016,24024,8115,1046,1531,19689,48835,1934],"text":" has a shared memory GPU. 这是中文测试。\r\nA local inference application should preserve model accuracy while improving speed. The Android tablet has","prompt_tokens":325,"prefill_tok_s":31.8536837899769,"decode_tok_s":5.97692413548568}

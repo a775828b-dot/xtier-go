@@ -1,0 +1,3 @@
+11-07 21:18:50 [xtg] dory: 72 layers (16 / 40 x 2 / 16), last_loop, fp8 KV, context 4096, weights mapped in 0.02 s
+11-07 21:19:40 [xtg] decode attention + KV store: 0.571070s
+{"ids":[1934,1261,11530,6628,56455,1046,1032,23196,4392,11449,10437,1139,84720,1320,1013,1010,1065,3685,31587,5510,2715,33972,3244,14780,3016,24024,8115,1046,1531,19689,48835,1934],"text":" has a shared memory GPU. 这是中文测试。\r\nA local inference application should preserve model accuracy while improving speed. The Android tablet has","prompt_tokens":325,"prefill_tok_s":7.7335695493285,"decode_tok_s":4.432593513905634}

@@ -2,8 +2,8 @@
 
 [English](docs/README.en.md) · [文档目录](docs/README.md) · [架构](docs/architecture.md) · [计划](docs/PLAN.md)
 
-**GPU 审阅快照（非发布版）：** [实现、完整测试数据与退化情况](docs/reports/2026-11-07-gpu-review-snapshot.md)。
-命令行已有 OpenCL 线性层原型；同条件 prefill 约 2.56 倍，decode 反而约慢 28%，启动台 GPU 仍禁用。
+**GPU / NPU（开发中）：** 整步驻留 GPU 的路径在 Y900 上 prefill 31.9、decode 6.0 tok/s（CPU 7.7 / 4.4，325 token 提示，
+输出一致），启动台默认仍是 CPU。目标 prefill 300 / decode 40 的路线、NPU 摸底和分步计划见[速度方案](docs/speed-plan.md)。
 
 XTier Go 是 [XTier](https://github.com/a775828b-dot/xtier) 给安卓手机和平板的一支：装在手机上的 App，打开是启动台，选模型和
 启动选项后在本机起推理服务，其他 App（比如 DSH Go X）经 `http://127.0.0.1:18400/v1` 调用 OpenAI 兼容接口。推理核心是自己的

@@ -1,0 +1,10 @@
+model=TB522FU soc=SM8750P board=sun android=16
+Lenovo/TB522FU_PRC/TB522FU:16/BQ2A.250831.001/13.057.260702C:user/release-keys
+Linux localhost 6.6.82-android15-8-g076ac12bde16-ab13715361-4k #1 SMP PREEMPT Mon Jun 30 15:06:58 UTC 2025 aarch64 Toybox
+crw-r--r-- 1 system system u:object_r:vendor_xdsp_device:s0   10, 108 1970-01-01 12:48 /dev/fastrpc-adsp-secure
+crw-rw-r-- 1 system system u:object_r:vendor_qdsp_device:s0   10, 109 1970-01-01 12:48 /dev/fastrpc-cdsp
+crw-r--r-- 1 system system u:object_r:vendor_xdsp_device:s0   10, 110 1970-01-01 12:48 /dev/fastrpc-cdsp-secure
+crw-rw-rw- 1 system system u:object_r:gpu_device:s0          469,   0 1970-01-01 12:48 /dev/kgsl-3d0
+libcdsprpc.so
+libOpenCL.so
+cpu-0-0-0=30300 cpu-0-2-1=29900 cpu-0-3-0=28800 cpu-0-3-1=28400 cpu-0-4-0=28800 cpu-0-4-1=28400 cpu-0-5-0=28400 cpu-0-5-1=27600 cpuss-0-0=28800 cpuss-0-1=28800 cpu-1-0-0=28000 cpu-1-0-1=28400 cpu-1-1-0=28400 cpu-1-1-1=28000 cpuss-1-0=28400 cpu-0-0-1=29200 cpuss-1-1=27600 gpuss-0=27600 gpuss-1=27600 gpuss-2=27600 gpuss-3=27600 gpuss-4=28000 gpuss-5=28000 gpuss-6=28000 gpuss-7=28400 nsphvx-0=27600 nsphvx-1=27600 cpu-0-1-0=28800 nsphvx-2=28000 nsphmx-0=27600 nsphmx-1=28000 nsphmx-2=28000 nsphmx-3=28000 cpu-0-1-1=28400 battery=24000 cpu-0-2-0=28800 

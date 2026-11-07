@@ -1,0 +1,26 @@
+== T0 environment
+  Backend Libraries : Found
+  Library Version   : Not Found
+  Core Version      : Hexagon Architecture V79
+  Unit Test         : Passed
+}
+== T8 app domain (io.github.a775828b.xtiergo.dev)
+uid=10281(u0_a281) gid=10281(u0_a281) groups=10281(u0_a281),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs),50281(all_a281) context=u:r:runas_app:s0:c25,c257,c512,c768
+sh: can't open /dev/fastrpc-cdsp: Permission denied
+sh: can't open /dev/fastrpc-cdsp-secure: Permission denied
+/dev/kgsl-3d0 open ok
+== T1-T3 execute times
+seg_m1024_fp16 rc=0 wall_s=7.60 n=20  mem: VmHWM: 198680 kB VmRSS: 108468 kB 
+seg_m1024_w4a16 rc=0 wall_s=9.68 n=20  mem: VmHWM: 77812 kB VmRSS: 14112 kB 
+seg_m1024_w4a8 rc=0 wall_s=6.48 n=20  mem: VmHWM: 61204 kB VmRSS: 38008 kB 
+seg_m1024_w8a16 rc=0 wall_s=10.25 n=20  mem: VmHWM: 109592 kB VmRSS: 61460 kB 
+seg_m1024_w8a8 rc=0 wall_s=6.99 n=20  mem: VmHWM: 105572 kB VmRSS: 37836 kB 
+seg_m2048_w4a16 rc=0 wall_s=6.55 n=20  mem: VmHWM: 141236 kB VmRSS: 108412 kB 
+seg_m2048_w8a8 rc=0 wall_s=4.90 n=20  mem: VmHWM: 105624 kB VmRSS: 91688 kB 
+seg_m512_w4a16 rc=0 wall_s=5.38 n=20  mem: VmHWM: 61580 kB VmRSS: 45636 kB 
+seg_m512_w8a8 rc=0 wall_s=3.72 n=20  mem: VmHWM: 105704 kB VmRSS: 27660 kB 
+tiny_m16_fp16 rc=0 wall_s=0.56 n=20  mem: VmHWM: 6552 kB VmRSS: 6552 kB 
+tiny_m16_w8a16 rc=0 wall_s=0.56 n=20  mem: VmHWM: 7064 kB VmRSS: 7064 kB 
+tiny_m16_w8a16 rc=0 wall_s=1.12 n=200  mem: VmHWM: 20584 kB VmRSS: 12004 kB 
+tiny_m16_w8a16 rc=0 wall_s=1.11 n=200 --shared_buffer mem: VmHWM: 20620 kB VmRSS: 15380 kB 
+== T4 sustained seg_m1024_w4a16 180s

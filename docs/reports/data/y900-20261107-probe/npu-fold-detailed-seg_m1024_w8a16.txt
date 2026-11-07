@@ -1,0 +1,221 @@
+Input Log File Location: cmp3/models3-seg_m1024_w8a16-detailed/qnn-profiling-data_0.log
+Log File Created: Sat Nov  7 21:58:24 2026
+Time Scale: 1e-06
+Epoch Timestamp: 1794059904867757 Steady Clock Timestamp: 187187015896
+Generated using: 
+qnn-profile-viewer: v2.47.0.260601114230
+qnn-net-run: v2.47.0.260601114230
+Backend: v2.47.0.260601114230
+
+Qnn Init/Prepare/Finalize/De-Init/Execute/Lib-Load Statistics:
+------------------------------------------------------------
+Init Stats:
+-----------
+    NetRun: 45442 us
+    Backend (RPC (load binary) time): 34945 us
+    Backend (QNN accelerator (load binary) time): 34389 us
+    Backend (Accelerator (load binary) time): 34011 us
+    Backend (QNN (load binary) time): 45428 us
+
+Compose Graphs Stats:
+--------------
+    NetRun: 0 us
+
+Finalize Stats:
+---------------
+
+De-Init Stats:
+--------------
+    NetRun: 80078 us
+    Backend (RPC (deinit) time): 63535 us
+    Backend (QNN Accelerator (deinit) time): 62514 us
+    Backend (Accelerator (deinit) time): 62448 us
+    Backend (QNN (deinit) time): 80047 us
+
+Execute Stats (Overall):
+------------------------
+    NetRun IPS (includes IO and misc. time): 3.5581 inf/sec 
+
+Execute Stats (Average):
+------------------------
+Total Inference Time: 
+---------------------
+Graph 0 (seg_m1024):
+    NetRun: 177596 us
+    Backend (Number of HVX threads used): 6 count
+    Backend (RPC (execute) time): 168467 us
+    Backend (QNN accelerator (execute) time): 167038 us
+    Backend (Num times yield occured): 0 count
+    Backend (Time for initial VTCM acquire): 873 us
+    Backend (Time for HVX + HMX power on and acquire): 8023 us
+    Backend (Accelerator (execute) time (cycles)): 62796767 cycles
+        Input OpId_2 (cycles): 1339077 cycles
+        gate_s:OpId_17 (cycles): 1198120 cycles
+        gate_sig:OpId_19 (cycles): 2208826 cycles
+        att_g:OpId_26 (cycles): 1244078 cycles
+        o:OpId_30 (cycles): 3038920 cycles
+        h_yb_sq:OpId_33 (cycles): 951985 cycles
+        h_yb_ss:OpId_36 (cycles): 1430110 cycles
+        h_yb_se:OpId_40 (cycles): 90440 cycles
+        h_yb_rn:OpId_42 (cycles): 0 cycles
+        h_yb_inv:OpId_45 (cycles): 75642 cycles
+        h_yb:OpId_47 (cycles): 7161615 cycles
+        h_d:OpId_49 (cycles): 0 cycles
+        h_e:OpId_52 (cycles): 1378007 cycles
+        h_f:OpId_54 (cycles): 948347 cycles
+        h_sq:OpId_56 (cycles): 678455 cycles
+        h_ss:OpId_59 (cycles): 579435 cycles
+        h_se:OpId_62 (cycles): 4873 cycles
+        h_rn:OpId_64 (cycles): 0 cycles
+        h_inv:OpId_67 (cycles): 84654 cycles
+        h:OpId_69 (cycles): 1012634 cycles
+        gu:OpId_73 (cycles): 0 cycles
+        split_gu_n:OpId_77 (cycles): 3943446 cycles
+        mg_sig:OpId_80 (cycles): 0 cycles
+        silu:OpId_87 (cycles): 3900708 cycles
+        m:OpId_89 (cycles): 2782194 cycles
+        down:OpId_93 (cycles): 4545617 cycles
+        h2_yb_sq:OpId_96 (cycles): 1012425 cycles
+        h2_yb_ss:OpId_99 (cycles): 1434020 cycles
+        h2_yb_se:OpId_102 (cycles): 2698 cycles
+        h2_yb_rn:OpId_104 (cycles): 0 cycles
+        h2_yb_inv:OpId_107 (cycles): 97146 cycles
+        h2_yb:OpId_109 (cycles): 7264190 cycles
+        h2_d:OpId_111 (cycles): 0 cycles
+        h2_e:OpId_114 (cycles): 1388756 cycles
+        h2_f:OpId_116 (cycles): 948076 cycles
+        h2_sq:OpId_118 (cycles): 723893 cycles
+        h2_ss:OpId_121 (cycles): 591452 cycles
+        h2_se:OpId_124 (cycles): 3206 cycles
+        h2_rn:OpId_126 (cycles): 0 cycles
+        h2_inv:OpId_129 (cycles): 77996 cycles
+        h2:OpId_131 (cycles): 1015743 cycles
+        qkvg:OpId_135 (cycles): 0 cycles
+        split_qkvg_n:OpId_139 (cycles): 2851997 cycles
+        Output OpId_3 (cycles): 6787975 cycles
+    Backend (Accelerator (execute) time): 58930 us
+    Backend (Accelerator (execute excluding wait) time): 58366 us
+    Backend (QNN (execute) time): 177567 us
+
+Execute Stats (Min):
+------------------------
+Total Inference Time: 
+---------------------
+Graph 0 (seg_m1024):
+    NetRun: 140771 us
+    Backend (Number of HVX threads used): 6 count
+    Backend (RPC (execute) time): 135553 us
+    Backend (QNN accelerator (execute) time): 134484 us
+    Backend (Num times yield occured): 0 count
+    Backend (Time for initial VTCM acquire): 955 us
+    Backend (Time for HVX + HMX power on and acquire): 13037 us
+    Backend (Accelerator (execute) time (cycles)): 62717544 cycles
+        Input OpId_2 (cycles): 1307741 cycles
+        gate_s:OpId_17 (cycles): 1194058 cycles
+        gate_sig:OpId_19 (cycles): 2214832 cycles
+        att_g:OpId_26 (cycles): 1240989 cycles
+        o:OpId_30 (cycles): 3036222 cycles
+        h_yb_sq:OpId_33 (cycles): 952485 cycles
+        h_yb_ss:OpId_36 (cycles): 1424786 cycles
+        h_yb_se:OpId_40 (cycles): 87945 cycles
+        h_yb_rn:OpId_42 (cycles): 0 cycles
+        h_yb_inv:OpId_45 (cycles): 68942 cycles
+        h_yb:OpId_47 (cycles): 7162731 cycles
+        h_d:OpId_49 (cycles): 0 cycles
+        h_e:OpId_52 (cycles): 1373206 cycles
+        h_f:OpId_54 (cycles): 945264 cycles
+        h_sq:OpId_56 (cycles): 673871 cycles
+        h_ss:OpId_59 (cycles): 580209 cycles
+        h_se:OpId_62 (cycles): 3683 cycles
+        h_rn:OpId_64 (cycles): 0 cycles
+        h_inv:OpId_67 (cycles): 83384 cycles
+        h:OpId_69 (cycles): 1020833 cycles
+        gu:OpId_73 (cycles): 0 cycles
+        split_gu_n:OpId_77 (cycles): 3950759 cycles
+        mg_sig:OpId_80 (cycles): 0 cycles
+        silu:OpId_87 (cycles): 3903052 cycles
+        m:OpId_89 (cycles): 2781024 cycles
+        down:OpId_93 (cycles): 4467011 cycles
+        h2_yb_sq:OpId_96 (cycles): 1010733 cycles
+        h2_yb_ss:OpId_99 (cycles): 1435247 cycles
+        h2_yb_se:OpId_102 (cycles): 2488 cycles
+        h2_yb_rn:OpId_104 (cycles): 0 cycles
+        h2_yb_inv:OpId_107 (cycles): 102902 cycles
+        h2_yb:OpId_109 (cycles): 7279679 cycles
+        h2_d:OpId_111 (cycles): 0 cycles
+        h2_e:OpId_114 (cycles): 1398088 cycles
+        h2_f:OpId_116 (cycles): 947228 cycles
+        h2_sq:OpId_118 (cycles): 722020 cycles
+        h2_ss:OpId_121 (cycles): 596622 cycles
+        h2_se:OpId_124 (cycles): 2883 cycles
+        h2_rn:OpId_126 (cycles): 0 cycles
+        h2_inv:OpId_129 (cycles): 74695 cycles
+        h2:OpId_131 (cycles): 1022778 cycles
+        qkvg:OpId_135 (cycles): 0 cycles
+        split_qkvg_n:OpId_139 (cycles): 2849134 cycles
+        Output OpId_3 (cycles): 6800020 cycles
+    Backend (Accelerator (execute) time): 59075 us
+    Backend (Accelerator (execute excluding wait) time): 58241 us
+    Backend (QNN (execute) time): 140745 us
+
+Execute Stats (Max):
+------------------------
+Total Inference Time: 
+---------------------
+Graph 0 (seg_m1024):
+    NetRun: 320595 us
+    Backend (Number of HVX threads used): 6 count
+    Backend (RPC (execute) time): 299966 us
+    Backend (QNN accelerator (execute) time): 297224 us
+    Backend (Num times yield occured): 0 count
+    Backend (Time for initial VTCM acquire): 831 us
+    Backend (Time for HVX + HMX power on and acquire): 26495 us
+    Backend (Accelerator (execute) time (cycles)): 62786853 cycles
+        Input OpId_2 (cycles): 1328190 cycles
+        gate_s:OpId_17 (cycles): 1193489 cycles
+        gate_sig:OpId_19 (cycles): 2207589 cycles
+        att_g:OpId_26 (cycles): 1244258 cycles
+        o:OpId_30 (cycles): 3033056 cycles
+        h_yb_sq:OpId_33 (cycles): 955783 cycles
+        h_yb_ss:OpId_36 (cycles): 1433094 cycles
+        h_yb_se:OpId_40 (cycles): 90691 cycles
+        h_yb_rn:OpId_42 (cycles): 0 cycles
+        h_yb_inv:OpId_45 (cycles): 73820 cycles
+        h_yb:OpId_47 (cycles): 7156680 cycles
+        h_d:OpId_49 (cycles): 0 cycles
+        h_e:OpId_52 (cycles): 1375620 cycles
+        h_f:OpId_54 (cycles): 951337 cycles
+        h_sq:OpId_56 (cycles): 675289 cycles
+        h_ss:OpId_59 (cycles): 581186 cycles
+        h_se:OpId_62 (cycles): 3665 cycles
+        h_rn:OpId_64 (cycles): 0 cycles
+        h_inv:OpId_67 (cycles): 91445 cycles
+        h:OpId_69 (cycles): 1045878 cycles
+        gu:OpId_73 (cycles): 0 cycles
+        split_gu_n:OpId_77 (cycles): 3951651 cycles
+        mg_sig:OpId_80 (cycles): 0 cycles
+        silu:OpId_87 (cycles): 3898596 cycles
+        m:OpId_89 (cycles): 2806800 cycles
+        down:OpId_93 (cycles): 4535256 cycles
+        h2_yb_sq:OpId_96 (cycles): 1011368 cycles
+        h2_yb_ss:OpId_99 (cycles): 1432620 cycles
+        h2_yb_se:OpId_102 (cycles): 2280 cycles
+        h2_yb_rn:OpId_104 (cycles): 0 cycles
+        h2_yb_inv:OpId_107 (cycles): 102319 cycles
+        h2_yb:OpId_109 (cycles): 7267414 cycles
+        h2_d:OpId_111 (cycles): 0 cycles
+        h2_e:OpId_114 (cycles): 1389603 cycles
+        h2_f:OpId_116 (cycles): 949277 cycles
+        h2_sq:OpId_118 (cycles): 719420 cycles
+        h2_ss:OpId_121 (cycles): 590853 cycles
+        h2_se:OpId_124 (cycles): 2884 cycles
+        h2_rn:OpId_126 (cycles): 0 cycles
+        h2_inv:OpId_129 (cycles): 78786 cycles
+        h2:OpId_131 (cycles): 1001052 cycles
+        qkvg:OpId_135 (cycles): 0 cycles
+        split_qkvg_n:OpId_139 (cycles): 2847534 cycles
+        Output OpId_3 (cycles): 6758070 cycles
+    Backend (Accelerator (execute) time): 59899 us
+    Backend (Accelerator (execute excluding wait) time): 58390 us
+    Backend (QNN (execute) time): 320576 us
+

@@ -1,0 +1,14 @@
+11-07 21:36:30 [xtg] GPU kernel attend       43410.242 ms    2856 launches  36.6%
+11-07 21:36:30 [xtg] GPU kernel attend_merge     0.925 ms      56 launches   0.0%
+11-07 21:36:30 [xtg] GPU kernel attend_split    52.646 ms      56 launches   0.0%
+11-07 21:36:30 [xtg] GPU kernel gate_norm       94.867 ms    2912 launches   0.1%
+11-07 21:36:30 [xtg] GPU kernel gemmt        17806.897 ms     896 launches  15.0%
+11-07 21:36:30 [xtg] GPU kernel gemv16          22.530 ms       2 launches   0.0%
+11-07 21:36:30 [xtg] GPU kernel gemv16m       2181.650 ms      49 launches   1.8%
+11-07 21:36:30 [xtg] GPU kernel gemv4          121.840 ms     224 launches   0.1%
+11-07 21:36:30 [xtg] GPU kernel gemvm        54342.453 ms   10976 launches  45.9%
+11-07 21:36:30 [xtg] GPU kernel kv_store        63.723 ms    2912 launches   0.1%
+11-07 21:36:30 [xtg] GPU kernel rope_norm       62.228 ms    5824 launches   0.1%
+11-07 21:36:30 [xtg] GPU kernel slerp          157.910 ms    5824 launches   0.1%
+11-07 21:36:30 [xtg] GPU kernel swiglu_norm    164.665 ms    2912 launches   0.1%
+11-07 21:36:30 [xtg] GPU kernels total 118485.844 ms

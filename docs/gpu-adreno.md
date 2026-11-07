@@ -2,9 +2,10 @@
 
 [回到文档目录](README.md)
 
-**状态：GPU 线性层原型已实现，尚不可作为默认加速后端。** 真实短请求的 prefill 提升约 2.56 倍，decode 退化约 28%；
-注意力只有未接通草稿。详见[审阅快照与原始数据](reports/2026-11-07-gpu-review-snapshot.md)。下面保留原设计预测，
-其中 125–250 / 20–35 tok/s 等数字尚未实现，不能当作当前速度。
+**这是真机摸底之前写的方案，现在以 [speed-plan.md](speed-plan.md) 为准。** 2026-11-07 晚整步驻留 GPU 的路径已在 Y900 上跑通
+（prefill 31.9、decode 6.0 tok/s，与 CPU 输出一致），真机数据见[摸底报告](reports/2026-11-07-y900-npu-gpu-probe.md)；
+更早的线性层原型见[审阅快照](reports/2026-11-07-gpu-review-snapshot.md)。下面保留原设计预测，其中 125–250 / 20–35 tok/s
+等数字尚未实现，不能当作当前速度。
 
 ## 实测（Y900，Snapdragon 8 Elite，Adreno 830，Android 16，OpenCL 3.0，驱动 0800.72）
 

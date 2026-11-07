@@ -1,0 +1,11 @@
+11-07 21:19:40 [xtg] OpenCL high performance hint: 0
+11-07 21:19:40 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights; prefill GEMM FP16 tiles)
+11-07 21:19:41 [xtg] OpenCL packed weights: 2529034240 bytes
+11-07 21:19:41 [xtg] dory: 72 layers (16 / 40 x 2 / 16), last_loop, fp8 KV, context 4096, weights mapped in 1.33 s
+11-07 21:20:08 [xtg] decode attention + KV store: 4.026022s
+11-07 21:20:08 [xtg] GPU decode: NVFP4 5.437643s/7168 calls, BF16 0.407378s/33 calls
+11-07 21:20:08 [xtg] GPU kernel gemm4        10344.967 ms     448 launches  71.2%
+11-07 21:20:08 [xtg] GPU kernel gemv16         373.767 ms      33 launches   2.6%
+11-07 21:20:08 [xtg] GPU kernel gemv4         3815.800 ms    7168 launches  26.3%
+11-07 21:20:08 [xtg] GPU kernels total 14534.535 ms
+{"ids":[1934,1261,11530,6628,56455,1046,1032,23196,4392,11449,10437,1139,84720,1320,1013,1010,1065,3685,31587,5510,2715,33972,3244,14780,3016,24024,8115,1046,1531,19689,48835,1934],"text":" has a shared memory GPU. 这是中文测试。\r\nA local inference application should preserve model accuracy while improving speed. The Android tablet has","prompt_tokens":325,"prefill_tok_s":19.892864815876376,"decode_tok_s":3.110398240787017}

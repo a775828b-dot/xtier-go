@@ -1,0 +1,32 @@
+device QUALCOMM Adreno(TM) 830 | OpenCL 3.0 Adreno(TM) 830 | driver OpenCL 3.0 QUALCOMM build: 0800.72 Compiler E031.47.18.49 | 12 CUs | local 32 KiB | global 7.5 GiB | max alloc 1.00 GiB
+extension cl_qcom_recordable_queues yes
+extension cl_khr_integer_dot_product yes
+extension cl_qcom_dot_product8 yes
+extension cl_khr_fp16 yes
+extension cl_khr_subgroups yes
+extension cl_qcom_reqd_sub_group_size no
+extension cl_qcom_perf_hint yes
+extension cl_qcom_ml_ops yes
+extension cl_qcom_ext_host_ptr yes
+extension cl_qcom_ion_host_ptr no
+extension cl_qcom_dmabuf_host_ptr yes
+extension cl_qcom_android_ahardwarebuffer_host_ptr yes
+extension cl_khr_command_buffer no
+extension cl_qcom_onchip_global_memory yes
+extensions cl_ext_image_from_buffer cl_ext_image_requirements_info cl_khr_3d_image_writes cl_khr_byte_addressable_store cl_khr_depth_images cl_khr_egl_event cl_khr_egl_image cl_khr_extended_bit_ops cl_khr_external_memory cl_khr_external_memory_dma_buf cl_khr_external_memory_opaque_fd cl_khr_external_semaphore cl_khr_external_semaphore_sync_fd cl_khr_fp16 cl_khr_gl_sharing cl_khr_global_int32_base_atomics cl_khr_global_int32_extended_atomics cl_khr_image2d_from_buffer cl_khr_integer_dot_product cl_khr_kernel_clock cl_khr_local_int32_base_atomics cl_khr_local_int32_extended_atomics cl_khr_mipmap_image cl_khr_semaphore cl_khr_srgb_image_writes cl_khr_subgroups cl_khr_subgroup_ballot cl_khr_subgroup_extended_types cl_khr_subgroup_non_uniform_arithmetic cl_khr_subgroup_non_uniform_vote cl_khr_subgroup_rotate cl_khr_subgroup_shuffle cl_khr_subgroup_shuffle_relative cl_khr_suggested_local_work_size cl_qcom_accelerated_image_ops cl_qcom_android_ahardwarebuffer_host_ptr cl_qcom_android_native_buffer_host_ptr cl_qcom_bfloat16_product cl_qcom_bitreverse cl_qcom_compressed_image cl_qcom_create_buffer_from_image cl_qcom_dmabuf_host_ptr cl_qcom_dot_product8 cl_qcom_ext_host_ptr cl_qcom_ext_host_ptr_iocoherent cl_qcom_extended_query_image_info cl_qcom_extract_image_plane cl_qcom_filter_bicubic cl_qcom_ml_ops cl_qcom_other_image cl_qcom_perf_hint cl_qcom_priority_hint cl_qcom_protected_context cl_qcom_recordable_queues cl_qcom_subgroup_shuffle cl_qcom_vector_image_ops cl_qcom_onchip_global_memory cl_qcom_large_buffer cl_qcom_ahardwarebuffer_direct_import cl_qcom_local_memory_control 
+launch async 11.8 us per kernel (2000 queued, one clFinish)
+launch sync 139.4 us per kernel (clFinish after each)
+launch roundtrip 174.0 us per call (upload 10 KiB, kernel, read 28 KiB, clFinish: today's backend)
+read device 66.0 GB/s (512 MiB, kernel time 8.13 ms)
+read hostptr 66.0 GB/s (512 MiB, kernel time 8.13 ms)
+gemv4 M=1 0.424 ms per call (1.00x the M=1 time), 24.3 GB/s of weights, err/rms 8.6e-07
+gemv4 M=2 0.801 ms per call (1.89x the M=1 time), 12.9 GB/s of weights, err/rms 2.0e-07
+gemv4 M=4 1.602 ms per call (3.78x the M=1 time), 6.4 GB/s of weights, err/rms 2.7e-07
+gemv4 M=8 3.246 ms per call (7.66x the M=1 time), 3.2 GB/s of weights, err/rms 3.0e-07
+gemv4 M=16 6.398 ms per call (15.09x the M=1 time), 1.6 GB/s of weights, err/rms 2.9e-07
+gemm_fp16 M=512 N=7168 K=2560 36.62 ms, 513 GFLOP/s, err/rms 1.9e-03
+gemm_fp16 M=1024 N=7168 K=2560 72.27 ms, 520 GFLOP/s, err/rms 2.4e-03
+peak_fp32 2.81 TFLOP/s
+peak_fp16 5.61 TFLOP/s
+peak_int8dot 8.78 TOP/s
+done

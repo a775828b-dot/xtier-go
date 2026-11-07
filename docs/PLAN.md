@@ -21,15 +21,19 @@ CPU 冷提示 prefill 6.66–7.19 tok/s、decode 3.68–4.38 tok/s（两组短�
 模型通过临时 USB 通道导入并校验，直接镜像下载在当前网络超时。阶段 0 / 2b 只完成部分，
 DSH 真客户端、10/30 分钟稳定性、长上下文与 GPU 不在此次通过范围。详见[记录](reports/2026-11-07-y900-bringup.md)。
 
+2026-11-07 晚：整步驻留 GPU 跑通（prefill 31.9、decode 6.0 tok/s，输出与 CPU 一致），提示查找投机解码（`spec_k`）上线但
+GPU 小 M 内核没复用权重、只快 19%；NPU 摸底：折叠后的 W8A16 段线性层折算 286 tok/s。速度目标 prefill 300 / decode 40
+（DSH 32K）的分步计划见 [speed-plan.md](speed-plan.md)，数据见[摸底报告](reports/2026-11-07-y900-npu-gpu-probe.md)。
+
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 1 引擎 + Dory + 服务（服务器上） | 通用内核、NVFP4、KV（线性 / 环形、FP8）、Dory 前向（两种 KV 模式、分块）、分词器、模板、解析器、HTTP、C API、命令行工具 | **完成**（2026-11-07，[报告](reports/2026-11-07-host-bringup.md)） |
 | 1b App 骨架 | Compose 启动台、前台服务、JNI、模型文件下载 / 校验、内存估算 | 写完，CI 编译；**没在设备上跑过** |
-| 0 真机摸底 | `/proc/cpuinfo`（i8mm / bf16 / sve）、前台服务的 cpuset、内存带宽（1 / 2 / 6 / 8 线程）、持续负载温度、`libOpenCL.so` 是否对 App 开放；`adb shell` 跑 `kernels_test`、`xtg-server` | 待做（平板接上后约 1 天） |
+| 0 真机摸底 | `/proc/cpuinfo`（i8mm / bf16 / sve）、前台服务的 cpuset、内存带宽（1 / 2 / 6 / 8 线程）、持续负载温度、`libOpenCL.so` 是否对 App 开放；`adb shell` 跑 `kernels_test`、`xtg-server` | GPU / NPU 部分完成（App 里 OpenCL 可用，[报告](reports/2026-11-07-y900-npu-gpu-probe.md)）；cpuset、CPU 带宽、满负荷持续温度、App 里的 NPU 待做 |
 | 2 CPU 速度 | NEON：NVFP4 GEMV 做到实测带宽 70%、GEMM（i8mm W4A8，A/B 精度后再定默认）、注意力（FP8 KV 直接解码）、范数 / RoPE；线程绑核 | 待做 |
 | 2b 真机验收 | App 真机启动、DSH Go X 真实任务、息屏 / 后台 30 分钟、首请求不卡、内存不触发 LMK、10 分钟持续速度 | 待做 |
-| 3 加速包 | FP8 KV 更细的缩放（每 32 个元素）、提示词查找投机解码（n-gram，验证 k 个 token 与 decode 一步读的权重一样多）、多个会话槽 | 待做 |
-| 4 GPU / NPU | Adreno（OpenCL）prefill；Hexagon（QNN）可选。Adreno 830 实测 66 GB/s、FP16 5.97 TFLOP/s，8 GiB 显存预算够 128K / 256K（[dory.md](dory.md#gpu-预算y900-的-adreno-8302026-11-07-实测)）；prefill 是 DSH 大提示的瓶颈，真机摸底后可以提到阶段 2 之前；方案见 [gpu-adreno.md](gpu-adreno.md) | 待做 |
+| 3 加速包 | FP8 KV 更细的缩放（每 32 个元素）、提示词查找投机解码（n-gram，验证 k 个 token 与 decode 一步读的权重一样多）、多个会话槽 | 投机解码已实现（`spec_k`，per_loop 精确），等 GPU 小 M 内核（[speed-plan.md](speed-plan.md) G2 / G3）；其余待做 |
+| 4 GPU / NPU | Adreno（OpenCL）整步驻留；Hexagon（QNN）做 prefill 的线性层，GPU 同时做注意力。按 [speed-plan.md](speed-plan.md) 的 N0 → G1–G5 / N1–N3 推进 | 进行中：GPU 驻留已跑通，NPU 摸底完成 |
 | 5 更多模型 | 新模型 = `packs/` 一个目录 + `configs/` 一张卡片 | 待做 |
 
 ## 已知问题与限制

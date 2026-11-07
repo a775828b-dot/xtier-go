@@ -1,0 +1,15 @@
+models2/seg_m1024_w8a16 basic rc=0  NetRun: 189058 us  Backend (Accelerator (execute) time): 180955 us 
+models3/seg_m1024_w8a16 basic rc=0  NetRun: 66890 us  Backend (Accelerator (execute) time): 59186 us 
+models2/seg_m2048_w8a16 basic rc=0  NetRun: 225075 us  Backend (Accelerator (execute) time): 212398 us 
+models3/seg_m2048_w8a16 basic rc=0  NetRun: 165116 us  Backend (Accelerator (execute) time): 152468 us 
+models2/seg_m1024_w8a8 basic rc=0  NetRun: 123025 us  Backend (Accelerator (execute) time): 118132 us 
+models3/seg_m1024_w8a8 basic rc=0  NetRun: 44473 us  Backend (Accelerator (execute) time): 39802 us 
+models2/seg_m1024_fp16 basic rc=0  NetRun: 227238 us  Backend (Accelerator (execute) time): 210071 us 
+models3/seg_m1024_fp16 basic rc=0  NetRun: 159670 us  Backend (Accelerator (execute) time): 143456 us 
+models3/seg_m2048_fp16 basic rc=0  NetRun: 312788 us  Backend (Accelerator (execute) time): 290690 us 
+models3/seg_m2048_w8a8 basic rc=0  NetRun: 85978 us  Backend (Accelerator (execute) time): 78520 us 
+models3/seg_m2048_w4a16 basic rc=0  NetRun: 140852 us  Backend (Accelerator (execute) time): 128159 us 
+models2/seg_m2048_w8a16 basic rc=0  NetRun: 226193 us  Backend (Accelerator (execute) time): 212862 us 
+models3/seg_m2048_w8a16 basic rc=0  NetRun: 165169 us  Backend (Accelerator (execute) time): 152425 us 
+models3/seg_m2048_w8a16 detailed rc=0  NetRun: 493639 us  Backend (Accelerator (execute) time): 152632 us 
+models3/seg_m2048_w8a8 detailed rc=0  NetRun: 139875 us  Backend (Accelerator (execute) time): 78912 us 

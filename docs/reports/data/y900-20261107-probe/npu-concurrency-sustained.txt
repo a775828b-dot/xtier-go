@@ -1,0 +1,18 @@
+# cmp4: folded seg_m768_w8a16 next to a gpu_probe loop (outputs written between executes: low NPU duty in the sustained part, superseded by cmp5)
+gpu alone: read device 65.6 GB/s (512 MiB, kernel time 8.19 ms) gemm_fp16 M=512 N=7168 K=2560 35.29 ms, 532 GFLOP/s gemm_fp16 M=1024 N=7168 K=2560 70.19 ms, 535 GFLOP/s
+npu_alone  NetRun: 47001 us  Backend (Accelerator (execute) time): 41288 us  cpu-1-0-0=59600 gpuss-0=52600 nsphvx-0=50700 nsphmx-0=52600
+npu_with_gpu  NetRun: 43966 us  Backend (Accelerator (execute) time): 40655 us  cpu-1-0-0=87200 gpuss-0=70300 nsphvx-0=61100 nsphmx-0=64200
+
+# cmp5: the GPU next to a busy NPU (1500 executes in the background), then 10 x 250 executes back to back
+gpu alone: read device 66.0 GB/s (512 MiB, kernel time 8.14 ms) gemm_fp16 M=1024 N=7168 K=2560 69.79 ms, 539 GFLOP/s, err/rms 2.4e-03 
+gpu with npu: read device 55.7 GB/s (512 MiB, kernel time 9.63 ms) gemm_fp16 M=1024 N=7168 K=2560 69.63 ms, 540 GFLOP/s, err/rms 2.4e-03 
+t=22s wall=22.0s  NetRun: 47345 us  Backend (Accelerator (execute) time): 41318 us  cpu-1-0-0=44200 gpuss-0=43800 nsphvx-0=43000 nsphmx-0=42600 
+t=45s wall=22.2s  NetRun: 47451 us  Backend (Accelerator (execute) time): 41373 us  cpu-1-0-0=44200 gpuss-0=43800 nsphvx-0=43000 nsphmx-0=42600 
+t=68s wall=21.8s  NetRun: 47392 us  Backend (Accelerator (execute) time): 41386 us  cpu-1-0-0=44600 gpuss-0=43800 nsphvx-0=43000 nsphmx-0=43400 
+t=91s wall=22.4s  NetRun: 47523 us  Backend (Accelerator (execute) time): 41449 us  cpu-1-0-0=43800 gpuss-0=43400 nsphvx-0=42600 nsphmx-0=42600 
+t=114s wall=22.5s  NetRun: 47431 us  Backend (Accelerator (execute) time): 41370 us  cpu-1-0-0=43800 gpuss-0=43400 nsphvx-0=42300 nsphmx-0=42600 
+t=137s wall=22.6s  NetRun: 47524 us  Backend (Accelerator (execute) time): 41402 us  cpu-1-0-0=43800 gpuss-0=43400 nsphvx-0=41900 nsphmx-0=42600 
+t=161s wall=22.6s  NetRun: 47462 us  Backend (Accelerator (execute) time): 41411 us  cpu-1-0-0=43000 gpuss-0=43000 nsphvx-0=42300 nsphmx-0=42300 
+t=184s wall=22.7s  NetRun: 47443 us  Backend (Accelerator (execute) time): 41388 us  cpu-1-0-0=43400 gpuss-0=43400 nsphvx-0=41900 nsphmx-0=42300 
+t=208s wall=22.7s  NetRun: 47427 us  Backend (Accelerator (execute) time): 41387 us  cpu-1-0-0=43400 gpuss-0=43000 nsphvx-0=41900 nsphmx-0=42300 
+t=231s wall=22.2s  NetRun: 47402 us  Backend (Accelerator (execute) time): 41391 us  cpu-1-0-0=43800 gpuss-0=43400 nsphvx-0=42600 nsphmx-0=42300 

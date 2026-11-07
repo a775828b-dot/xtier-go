@@ -1,0 +1,36 @@
+PF_VALIDATOR: DEBUG: Calling PlatformValidator->setBackend
+PF_VALIDATOR: DEBUG: Calling PlatformValidator->isBackendHardwarePresent
+PF_VALIDATOR: DEBUG: Calling PlatformValidator->isBackendAvailable
+PF_VALIDATOR: DEBUG: Should be able to access atleast one of libraries from : libc.so
+PF_VALIDATOR: DEBUG: dlOpen successfull for library : libc.so
+PF_VALIDATOR: DEBUG: Should be able to access atleast one of libraries from : libadsprpc_system.so,libcdsprpc_system.so,libadsprpc.so,libcdsprpc.so
+PF_VALIDATOR: DEBUG: dlOpen successfull for library : libadsprpc.so
+PF_VALIDATOR: DEBUG: dlOpen successfull for library : libcdsprpc.so
+Backend DSP Prerequisites: Present.
+PF_VALIDATOR: DEBUG: Calling PlatformValidator->getLibVersion
+PF_VALIDATOR: ERROR: The fastRPC library version is not implemented yet.
+
+Library version of the backend DSP: Not Found.
+PF_VALIDATOR: DEBUG: Calling PlatformValidator->getCoreVersion
+Core Version of the backend DSP: Hexagon Architecture V79
+PF_VALIDATOR: DEBUG: Calling PlatformValidator->backendCheck
+PF_VALIDATOR: DEBUG: Should be able to access atleast one of libraries from : libc.so
+PF_VALIDATOR: DEBUG: dlOpen successfull for library : libc.so
+PF_VALIDATOR: DEBUG: Should be able to access atleast one of libraries from : libadsprpc_system.so,libcdsprpc_system.so,libadsprpc.so,libcdsprpc.so
+PF_VALIDATOR: DEBUG: dlOpen successfull for library : libadsprpc.so
+PF_VALIDATOR: DEBUG: dlOpen successfull for library : libcdsprpc.so
+PF_VALIDATOR: DEBUG: Starting calculator test
+PF_VALIDATOR: DEBUG: Loading sample stub: libQnnHtpV79CalculatorStub.so
+PF_VALIDATOR: DEBUG: Successfully loaded DSP library - 'libQnnHtpV79CalculatorStub.so'.  Setting up pointers.
+PF_VALIDATOR: DEBUG: Success in executing the sum function
+Unit Test on the backend DSP: Passed.
+QNN is supported for backend DSP on the device.
+*********** Results Summary ***********
+Backend = DSP
+{
+  Backend Hardware  : Supported
+  Backend Libraries : Found
+  Library Version   : Not Found
+  Core Version      : Hexagon Architecture V79
+  Unit Test         : Passed
+}
