@@ -2,8 +2,9 @@
 # run_probe.sh [quick]: the NPU probe on the device (adb shell, from the kit directory). Writes results/ and
 # results.tar.gz: environment (T0), per-model execute times with profiling logs and the first 32 output rows
 # (T1 / T2 / T3), memory (T7), a 3-minute sustained run with temperatures (T4), the same run next to a GPU load
-# when GPU_LOAD names a command (T5), and whether the app's domain can open the CDSP (T8, needs APP=<package>).
-# quick: one model per test, 1-minute sustained run.
+# when GPU_LOAD names a command (T5), and whether the app's domain can open the CDSP (T8, needs APP=<package>;
+# run-as gives the runas_app domain, not untrusted_app, so a refusal there does not settle it).
+# quick: one model per test, 1-minute sustained run. SUSTAIN_MODEL: the T4 / T5 model (default seg_m768_w8a16).
 K=$(cd "$(dirname "$0")" && pwd)
 cd "$K" || exit 1
 export LD_LIBRARY_PATH="$K/lib"
@@ -70,7 +71,7 @@ echo "== T8 app domain ($APP)" | tee -a $R/summary.txt
 cat $R/app_domain.txt | tee -a $R/summary.txt
 
 echo "== T1-T3 execute times" | tee -a $R/summary.txt
-if [ "$QUICK" = quick ]; then MODELS="tiny_m16_w8a16 seg_m1024_w4a16 seg_m1024_w8a8"; else
+if [ "$QUICK" = quick ]; then MODELS="tiny_m16_w8a16 seg_m768_w8a16 seg_m768_w8a8"; else
   MODELS=$(ls models | sed 's/\.bin$//' | sort); fi
 for n in $MODELS; do
   m=${n#*_m}; m=${m%%_*}
@@ -84,14 +85,16 @@ mv $R/prof/tiny_m16_w8a16.profile.txt $R/prof/tiny_m16_w8a16.n200.shared.profile
 tail -2 $R/times.txt | tee -a $R/summary.txt
 
 SUSTAIN=180; [ "$QUICK" = quick ] && SUSTAIN=60
-echo "== T4 sustained seg_m1024_w4a16 ${SUSTAIN}s" | tee -a $R/summary.txt
+SM=${SUSTAIN_MODEL:-seg_m768_w8a16}
+m=${SM#*_m}; SL=list_m${m%%_*}.txt
+echo "== T4 sustained $SM ${SUSTAIN}s" | tee -a $R/summary.txt
 temps > $R/thermal.txt
 t0=$(now)
 i=0
 while [ "$(awk -v a=$t0 -v b=$(now) 'BEGIN { print (b - a < '$SUSTAIN') }')" = 1 ]; do
   i=$((i + 1))
-  run seg_m1024_w4a16 list_m1024.txt 30
-  mv $R/prof/seg_m1024_w4a16.profile.txt $R/prof/sustain_$i.profile.txt 2>/dev/null
+  run $SM $SL 30
+  mv $R/prof/$SM.profile.txt $R/prof/sustain_$i.profile.txt 2>/dev/null
   echo "t=$(since $t0) $(temps)" >> $R/thermal.txt
 done
 tail -3 $R/thermal.txt | cut -c1-300 | tee -a $R/summary.txt
@@ -101,8 +104,8 @@ if [ -n "$GPU_LOAD" ]; then
   sh -c "while true; do $GPU_LOAD; done" > $R/gpu_load.txt 2>&1 &
   gp=$!
   sleep 3
-  run seg_m1024_w4a16 list_m1024.txt 30
-  mv $R/prof/seg_m1024_w4a16.profile.txt $R/prof/with_gpu.profile.txt 2>/dev/null
+  run $SM $SL 30
+  mv $R/prof/$SM.profile.txt $R/prof/with_gpu.profile.txt 2>/dev/null
   sleep 8
   pkill -P $gp 2>/dev/null   # the GPU command first: once its loop is gone it would be re-parented
   kill $gp 2>/dev/null

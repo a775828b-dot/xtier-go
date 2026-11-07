@@ -66,12 +66,17 @@ def emu(work):
 
 
 def profile_avg_us(text):
-    """Average per-inference execute time from qnn-profile-viewer output (microseconds), or None."""
-    for key in (r'NetRun:\s*([\d.]+)\s*us', r'Execute\s*\(?.*?\)?\s*.*?:\s*([\d.]+)\s*us'):
-        m = re.findall(key, text)
-        if m:
-            return float(m[-1])
-    return None
+    """(NetRun, accelerator) average per-inference execute times from qnn-profile-viewer output (microseconds)."""
+    i = text.find('Execute Stats (Average)')
+    if i < 0:
+        return None
+    sec = text[i:text.find('Execute Stats (Min)', i)]
+    net = re.search(r'NetRun:\s*([\d.]+)\s*us', sec)
+    acc = re.search(r'QNN accelerator \(execute\) time\):\s*([\d.]+)\s*us', sec)
+    hvx = re.search(r'Number of HVX threads used\):\s*(\d+)', sec)
+    if not net:
+        return None
+    return float(net.group(1)), float(acc.group(1)) if acc else None, int(hvx.group(1)) if hvx else None
 
 
 def device(work, results):
@@ -85,22 +90,27 @@ def device(work, results):
         graph = '_'.join(name.split('_')[:2])
         if graph not in manifest:
             continue
-        prof = os.path.join(results, 'prof', name + '.profile.txt')
+        extra = ' '.join(f[1:])
+        tag = '.shared' if '--shared_buffer' in extra else ('.n200' if kv.get('n') == '200' else '')
+        prof = os.path.join(results, 'prof', name + tag + '.profile.txt')
+        if not os.path.exists(prof):
+            prof = os.path.join(results, 'prof', name + '.profile.txt')
         avg = profile_avg_us(open(prof).read()) if os.path.exists(prof) else None
         n = int(kv.get('n', 1))
-        t = avg / 1e6 if avg else float(kv.get('wall_s', 'nan')) / n
+        t = avg[0] / 1e6 if avg else float(kv.get('wall_s', 'nan')) / n
         M, flop = manifest[graph]['M'], manifest[graph]['flop']
         acc = errors(os.path.join(results, 'acc', name), ref, 32) if graph.startswith('seg') else {}
-        rows.append({'name': name, 'M': M, 'ms': t * 1e3, 'tflops': flop / t / 1e12,
+        rows.append({'name': name + tag, 'M': M, 'ms': t * 1e3, 'accel_ms': avg[1] / 1e3 if avg and avg[1] else None,
+                     'hvx': avg[2] if avg else None, 'tflops': flop / t / 1e12,
                      'dory_linear_tok_s': M / (SEGMENTS * t) if graph.startswith('seg') else None,
                      'rc': kv.get('rc'), 'acc': acc, 'source': 'profile' if avg else 'wall'})
-    print('| 模型 | M | 每次 execute | TFLOP/s | Dory 线性层 tok/s | h2 误差 | k 误差 | 计时 |')
-    print('|---|---:|---:|---:|---:|---:|---:|---|')
+    print('| 模型 | M | 每次 execute | 其中 NPU | TFLOP/s | Dory 线性层 tok/s | h2 误差 | k 误差 | HVX 线程 |')
+    print('|---|---:|---:|---:|---:|---:|---:|---:|---:|')
     for r in rows:
         e = r['acc']
-        print(f"| {r['name']} | {r['M']} | {r['ms']:.2f} ms | {r['tflops']:.2f} | "
+        print(f"| {r['name']} | {r['M']} | {r['ms']:.2f} ms | {r['accel_ms'] or float('nan'):.2f} ms | {r['tflops']:.2f} | "
               f"{r['dory_linear_tok_s'] or 0:.0f} | {e.get('h2', {}).get('rel_rms', float('nan')) * 100:.2f}% | "
-              f"{e.get('k', {}).get('rel_rms', float('nan')) * 100:.2f}% | {r['source']} |")
+              f"{e.get('k', {}).get('rel_rms', float('nan')) * 100:.2f}% | {r['hvx']} |")
     return rows
 
 

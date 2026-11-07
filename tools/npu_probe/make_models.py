@@ -1,13 +1,14 @@
 """ONNX models, inputs and references for the NPU probe (server side; numpy + onnx, no torch).
 
-    python tools/npu_probe/make_models.py --model DIR --capture DIR --out DIR [--layer 32] [--m 512,1024,2048]
+    python tools/npu_probe/make_models.py --model DIR --capture DIR --out DIR [--layer 32] [--m 512,768,1024] [--plain]
 
 The segment is everything between two attention calls of Dory, with the real NVFP4 weights decoded exactly to
 FP32: the output gate and norm of attention sublayer L, its o_proj, slerp, the MLP L+1 (gate / up as one matrix,
 SiLU with the suv scales, norm, down), slerp, then the q / k / v / g projections of attention sublayer L+2
 (91.75 M weights, 2 x 91.75 M FLOP per token). Inputs x [M, 2560], att [M, 4096], gate [M, 4096]; outputs
-h2 [M, 2560], q [M, 4096], k [M, 1024], v [M, 1024], g2 [M, 4096]. Also tiny_m16: one 2560 x 2560 matrix for the
-fixed cost of an execute. Writes onnx/*.onnx, raw float32 inputs, the input lists (calib_m*.txt: absolute paths
+h2 [M, 2560], q [M, 4096], k [M, 1024], v [M, 1024], g2 [M, 4096]; M <= 2048 (the test window). The graph is
+folded by default (segment_onnx; 2.8x faster on the Y900, same error), --plain keeps every norm and scale. Also
+tiny_m16: one 2560 x 2560 matrix for the fixed cost of an execute. Writes onnx/*.onnx, raw float32 inputs, the input lists (calib_m*.txt: absolute paths
 for the quantizer; list_m*.txt: relative to the kit for qnn-net-run), ref.npz (float64 math on the test rows) and
 manifest.json.
 """
@@ -107,7 +108,13 @@ def save(model, path):
     onnx.save(model, path)
 
 
-def segment_onnx(W, M, path):
+def segment_onnx(W, M, path, fold=False):
+    # fold: the same math with fewer [M, C] passes. norm(c * v) = norm(v) for a row scalar c > 0, so the norms of
+    # att_g and m go (o and down are normalized by the slerp anyway), the slerp inputs x and h are already unit
+    # rows, and the SwiGLU scales move into the gate / up rows (a per-row weight scale absorbs them exactly)
+    if fold:
+        W = dict(W, wgu=W['wgu'] * np.concatenate([W['sg'], W['su']])[:, None])
+        del W['sg'], W['su']
     nodes = []
     init = [numpy_helper.from_array(v, k) for k, v in W.items()]
     init += [numpy_helper.from_array(np.array(s, np.int64), name) for name, s in
@@ -119,24 +126,26 @@ def segment_onnx(W, M, path):
         return out
 
     # justnorm from elementwise ops and a row sum: LpNormalization becomes one HTP L2Norm that needs the whole
-    # [M, C] tensor in VTCM (8 MiB) and fails to prepare at M = 1024 with 16-bit activations
+    # [M, C] tensor in VTCM (8 MiB) and fails to prepare at M = 1024 with 16-bit activations; a [M, C] / [M, 1]
+    # Div made the M = 1024 segment 1.3-2x slower on the Y900 than one reciprocal per row and a Mul
     def l2(a, out):
         ss = op('ReduceSum', [op('Mul', [a, a], out + '_sq'), 'axis1'], out + '_ss', keepdims=1)
-        return op('Div', [a, op('Sqrt', [op('Add', [ss, 'eps'], out + '_se')], out + '_rn')], out)
+        inv = op('Reciprocal', [op('Sqrt', [op('Add', [ss, 'eps'], out + '_se')], out + '_rn')], out + '_inv')
+        return op('Mul', [a, inv], out)
 
     def slerp(a, b, lr, out):
-        ya, yb = l2(a, out + '_ya'), l2(b, out + '_yb')
+        ya, yb = a if fold else l2(a, out + '_ya'), l2(b, out + '_yb')
         d = op('Mul', [op('Sub', [yb, ya], out + '_d'), lr], out + '_e')
         return l2(op('Add', [ya, d], out + '_f'), out)
 
     g = op('Sigmoid', [op('Mul', ['gate', 'gs'], 'gate_s')], 'gate_sig')
-    a = l2(op('Mul', ['att', g], 'att_g'), 'att_n')
-    h = slerp('x', op('Gemm', [a, 'wo'], 'o', transB=1), 'lr1', 'h')
+    a = op('Mul', ['att', g], 'att_g')
+    h = slerp('x', op('Gemm', [a if fold else l2(a, 'att_n'), 'wo'], 'o', transB=1), 'lr1', 'h')
     gu = op('Gemm', [h, 'wgu'], 'gu', transB=1)
     nodes.append(helper.make_node('Split', [gu, 'split_gu'], ['mg', 'mu'], name='split_gu_n', axis=1))
-    gs = op('Mul', ['mg', 'sg'], 'mg_s')
-    m = op('Mul', [op('Mul', [gs, op('Sigmoid', [gs], 'mg_sig')], 'silu'), op('Mul', ['mu', 'su'], 'mu_s')], 'm')
-    d = op('Gemm', [l2(m, 'm_n'), 'wd'], 'down', transB=1)
+    gs, us = ('mg', 'mu') if fold else (op('Mul', ['mg', 'sg'], 'mg_s'), op('Mul', ['mu', 'su'], 'mu_s'))
+    m = op('Mul', [op('Mul', [gs, op('Sigmoid', [gs], 'mg_sig')], 'silu'), us], 'm')
+    d = op('Gemm', [m if fold else l2(m, 'm_n'), 'wd'], 'down', transB=1)
     slerp(h, d, 'lr2', 'h2')
     qkvg = op('Gemm', ['h2', 'wqkvg'], 'qkvg', transB=1)
     nodes.append(helper.make_node('Split', [qkvg, 'split_qkvg'], ['q', 'k', 'v', 'g2'], name='split_qkvg_n', axis=1))
@@ -161,7 +170,8 @@ def main():
     ap.add_argument('--capture', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--layer', type=int, default=32)
-    ap.add_argument('--m', default='512,1024,2048')
+    ap.add_argument('--m', default='512,768,1024')
+    ap.add_argument('--plain', action='store_true', help='every norm and scale as written (default: folded)')
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     for d in ('onnx', 'inputs', 'calib'):
@@ -175,7 +185,10 @@ def main():
     for M in [int(s) for s in a.m.split(',')] + [16]:
         tiny = M == 16
         name = 'tiny_m16' if tiny else f'seg_m{M}'
-        (tiny_onnx if tiny else segment_onnx)(W, M, os.path.join(out, 'onnx', name + '.onnx'))
+        if tiny:
+            tiny_onnx(W, M, os.path.join(out, 'onnx', name + '.onnx'))
+        else:
+            segment_onnx(W, M, os.path.join(out, 'onnx', name + '.onnx'), not a.plain)
         ins = ('x',) if tiny else ('x', 'att', 'gate')
         for t in ins:   # the test input: the first M rows of the test window
             test[t][:M].astype(np.float32).tofile(os.path.join(out, 'inputs', f'{t}_m{M}.raw'))

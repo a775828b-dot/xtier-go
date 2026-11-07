@@ -3,23 +3,24 @@
 #
 #   WORK: make_models.py's output (onnx/, inputs/, calib_m*.txt, list_m*.txt, manifest.json)
 #   KIT:  the directory to push to the device (bin/ lib/ dsp/ models/ inputs/ run_probe.sh)
-#   env:  QNN_SDK_ROOT (QAIRT 2.47; bin/envsetup.sh sourced, its venv active), JOBS (parallel jobs, default 6)
+#   env:  QNN_SDK_ROOT (QAIRT 2.47; bin/envsetup.sh sourced, its venv active), JOBS (parallel jobs, default 6),
+#         MATRIX / ACCURACY (graph:variant lists, defaults below)
 #
 # Variants: fp16 = the FP32 graph (HTP runs it in FP16), wXaY = qairt-quantizer with X-bit per-row weights and
-# Y-bit activations calibrated on calib_m<M>.txt. The device matrix is MATRIX below; ACCURACY lists DLCs that are
-# only run in the HTP x86 emulator here (tools/npu_probe/analyze.py compares both with ref.npz).
+# Y-bit activations calibrated on calib_m<M>.txt. The device matrix is MATRIX; ACCURACY lists DLCs that are only
+# run in the HTP x86 emulator here (tools/npu_probe/analyze.py compares both with ref.npz). The defaults are the
+# 2026-11-07 device picks: W8A16 is the accurate variant, M = 768 the fastest chunk, w8a8 the speed reference.
 set -euo pipefail
 WORK=$(readlink -f "$1")
 KIT=$(readlink -f "$2")
 JOBS=${JOBS:-6}
 L=$QNN_SDK_ROOT/lib/x86_64-linux-clang
-MATRIX="seg_m1024:fp16 seg_m1024:w8a16 seg_m1024:w4a16 seg_m1024:w8a8 seg_m1024:w4a8
-seg_m512:w4a16 seg_m512:w8a8 seg_m2048:w4a16 seg_m2048:w8a8 tiny_m16:w8a16 tiny_m16:fp16"
-ACCURACY="seg_m512:fp16 seg_m512:w8a16 seg_m512:w4a8"
+MATRIX=${MATRIX:-"seg_m768:w8a16 seg_m768:w8a8 seg_m512:w8a16 seg_m1024:w8a16 seg_m1024:fp16 tiny_m16:w8a16 tiny_m16:fp16"}
+ACCURACY=${ACCURACY:-"seg_m512:fp16 seg_m512:w8a16 seg_m512:w4a8"}
 mkdir -p "$WORK/dlc" "$WORK/logs" "$WORK/ctx" "$KIT"/{bin,lib,dsp,models,inputs}
 
 # 1. FP32 DLC per graph
-for g in seg_m512 seg_m1024 seg_m2048 tiny_m16; do
+for g in $(for c in $MATRIX $ACCURACY; do echo "${c%%:*}"; done | sort -u); do
   [ -s "$WORK/dlc/$g.dlc" ] || qairt-converter -i "$WORK/onnx/$g.onnx" -o "$WORK/dlc/$g.dlc" > "$WORK/logs/conv_$g.log" 2>&1 &
 done
 wait
