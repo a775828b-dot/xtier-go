@@ -49,7 +49,8 @@ gpu 的输出和 CPU 逐 token 一致。App 里 DEV 测速 33.0 / 5.8：OpenCL �
 时间花在哪（`XTG_GPU_PROFILE=1`）：
 
 - **prefill**（919 token 的照抄提示，两块）：注意力占 59%，每次 240 ms（一行一个 work-group 的内核）；矩阵乘占 39%，
-  FP16 分块 0.52 TFLOP/s，只有 FP16 峰值的 9%。
+  FP16 分块 0.52 TFLOP/s，只有 FP16 峰值的 9%。**8K 提示**：prefill 8.8 tok/s（15 分钟），注意力占 GPU 时间的 82%；
+  decode 3.4 tok/s（注意力每次 2.0 ms）。
 - **decode**（per_loop，深度约 1.1K）：每 token 225 ms = GEMV 122 ms（224 次，读权重 24 GB/s，只用了带宽的 37%）
   + 注意力 56 ms（每次 1.0 ms）+ lm_head 11 ms + 小内核 5 ms + 发射空隙约 30 ms。
 - **投机解码**（同一照抄任务，spec_k 8）：每步接受 8.1 个，草稿 90% 被接受，decode 却只快 19%（4.42 → 5.26）。
@@ -134,7 +135,7 @@ GPU 本身（`tests/gpu_probe`）：读 66 GB/s；峰值 FP32 2.81、FP16 5.61 T
 
 | 步 | 内容 | 门槛 |
 |---|---|---|
-| G1 | GEMV 跑满带宽：权重加载时重排（量化码和缩放分开，按 work-group 的块连续存）；16 字节向量读，每个线程同时有多个读在路上；image1d_buffer 走纹理缓存；subgroup 规约 | gpu_probe M = 1 ≥ 55 GB/s；decode 4K ≥ 11 tok/s |
+| G1 | GEMV 跑满带宽：权重加载时重排（量化码和缩放分开，按 work-group 的块连续存）；16 字节向量读，每个线程同时有多个读在路上；image1d_buffer 走纹理缓存；subgroup 规约 | gpu_probe M = 1 ≥ 55 GB/s；decode 4K ≥ 11 tok/s。**11-07 深夜第一步**：权重改 k-major（[K/32][行] 的 16 字节块），一行一个线程、K 切 2 份（K ≤ 3072，走 image）或 8 份。引擎里 GEMV 每 token 119 → 86 ms（约 34 GB/s；探针里同一矩阵连跑能到 47–50，有缓存命中），325 token decode 6.0 → 6.8 tok/s，服务器 20 → 40。GPU 快了以后主机发射开销（每 token 约 28 ms）露出来，G4 要提前 |
 | G2 | 小 M 复用权重（M = 2–16）：每个权重只解码一次，对 M 行做乘加，激活放 local memory | M = 8 / 16 的耗时 ≤ M = 1 的 1.5 / 2 倍 |
 | G3 | 验证步的多行注意力：split-K 内核扩成 R 行，一个 KV 头的 4 个 q 头 × R 行共用一次 KV 读 | R = 8 的耗时 ≤ 单行的 1.3 倍；照抄任务 spec_k 8 的 decode ≥ spec_k 0 的 3 倍 |
 | G4 | 发射开销：用 `cl_qcom_recordable_queues` 把 decode 一步录下来，以后每步只改参数重放；RoPE、归一化、写 KV 等小内核合并 | GPU 空闲空隙 < 5%（现在 13%） |

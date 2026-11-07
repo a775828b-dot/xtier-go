@@ -38,6 +38,9 @@
 | gpu-linear | 19.89 | 3.11 | 与 CPU 一致 |
 | gpu（整步驻留） | 31.85 | 5.98 | 与 CPU 一致 |
 
+同一后端（gpu、per_loop、上下文 16384）的 8000 token 提示（本仓库源码）：prefill 8.81 tok/s，decode 3.41 tok/s。GPU 时间里
+`attend` 755 s（82.4%，896 次）、`gemmt` 150 s（16.4%）；decode 的 `attend_split` 每次 2.0 ms（约 1.1K 深度时 1.0 ms）。
+
 第一次跑 gpu 在驱动里崩溃：k 的 `rope_norm` 调用把一个不用的缓冲区参数传成 NULL，Adreno 驱动不接受。改成传一个真实缓冲区后正常。
 
 App（`.dev` 并排开发版）里选 GPU：6 s 上线，DEV 测速 prefill 33.0、decode 5.8 tok/s，说明 App 进程里能加载 OpenCL。
@@ -193,6 +196,8 @@ DEV 面板的「NPU 自检」或 `am start ... --ez npu_selftest true` 会从 Ap
 |---|---|
 | `gpu_probe.txt` | GPU 摸底完整输出 |
 | `engine-{cpu,gpu-linear,gpu}.txt` | 325 token generate，三个后端，含 GPU kernel 计时 |
+| `engine-gpu-8k.txt` | 8000 token 提示，gpu 后端，per_loop |
+| `engine-gpu-g1.txt`、`gpu_probe-gemvt.txt` | G1 第一步（k-major GEMV）之后的 325 token generate，和 GEMV 各写法的探针结果 |
 | `spec-k{0,8}-server.txt`、`spec-k{0,8}-status.json` | 照抄请求，spec_k 0 / 8 的 kernel 计时和 `/xtg/status` |
 | `npu-run1-*.txt` | 第一轮：环境、平台校验、App 域检查、每个模型的时间和内存 |
 | `npu-run1-detailed-seg_m1024_w8a16.txt` | 第一轮照写图的逐算子 profile |

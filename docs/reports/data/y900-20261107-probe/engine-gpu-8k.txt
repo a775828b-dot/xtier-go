@@ -1,0 +1,19 @@
+11-07 23:25:18 [xtg] OpenCL high performance hint: 0
+11-07 23:25:18 [xtg] OpenCL device: QUALCOMM Adreno(TM) 830 (FP32 accumulation, packed weights; prefill GEMM FP16 tiles)
+11-07 23:25:20 [xtg] OpenCL packed weights: 2529034240 bytes
+11-07 23:25:20 [xtg] dory: 72 layers (16 / 40 x 2 / 16), per_loop, fp8 KV, context 16384, weights mapped in 1.83 s
+11-07 23:40:38 [xtg] GPU decode: NVFP4 0.000000s/0 calls, BF16 0.000000s/0 calls
+11-07 23:40:38 [xtg] GPU kernel add_norm        16.155 ms     192 launches   0.0%
+11-07 23:40:38 [xtg] GPU kernel attend       754540.055 ms     896 launches  82.4%
+11-07 23:40:38 [xtg] GPU kernel attend_merge    30.117 ms    1792 launches   0.0%
+11-07 23:40:38 [xtg] GPU kernel attend_split  3632.262 ms    1792 launches   0.4%
+11-07 23:40:38 [xtg] GPU kernel gate_norm      501.477 ms    2688 launches   0.1%
+11-07 23:40:38 [xtg] GPU kernel gemmt        150237.542 ms    7168 launches  16.4%
+11-07 23:40:38 [xtg] GPU kernel gemv16         372.217 ms      33 launches   0.0%
+11-07 23:40:38 [xtg] GPU kernel gemv4         3921.422 ms    7168 launches   0.4%
+11-07 23:40:38 [xtg] GPU kernel kv_store       175.074 ms    2688 launches   0.0%
+11-07 23:40:38 [xtg] GPU kernel rope_norm      297.977 ms    5376 launches   0.0%
+11-07 23:40:38 [xtg] GPU kernel slerp          713.772 ms    5376 launches   0.1%
+11-07 23:40:38 [xtg] GPU kernel swiglu_norm    924.043 ms    2688 launches   0.1%
+11-07 23:40:38 [xtg] GPU kernels total 915362.114 ms
+{"ids":[27704,1044,27704,1574,1429,10114,3346,2871,1369,13274,5773,3729,2480,1040,11954,13872,27054,1110,23000,1468,1652,1826,1293,1495,2849,1512,1652,1895,1439,7347,12964,1058],"text":" nullptr, nullptr), \"output read\");\n        offset += size_t(ws[j]->n_out);\n      }\n    } else {\n      // Fused rows:","prompt_tokens":8000,"prefill_tok_s":8.808192200556642,"decode_tok_s":3.406689610754004}

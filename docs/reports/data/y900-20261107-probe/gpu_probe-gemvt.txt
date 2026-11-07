@@ -1,0 +1,216 @@
+gemvt qkvg N=10240 K=2560: gemv4m 0.591 ms, 24.9 GB/s, err/rms 2.0e-08
+gemvt qkvg global rows=1 KS=1 0.385 ms, 38.3 GB/s (1.54x gemv4m), err/rms 3.5e-07
+gemvt qkvg global rows=1 KS=2 0.348 ms, 42.4 GB/s (1.70x gemv4m), err/rms 2.0e-07
+gemvt qkvg global rows=1 KS=4 0.374 ms, 39.4 GB/s (1.58x gemv4m), err/rms 1.6e-07
+gemvt qkvg global rows=1 KS=8 0.359 ms, 41.1 GB/s (1.65x gemv4m), err/rms 1.5e-07
+gemvt qkvg global rows=2 KS=1 4.643 ms, 3.2 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt qkvg global rows=2 KS=2 5.128 ms, 2.9 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg global rows=2 KS=4 5.195 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.6e-07
+gemvt qkvg global rows=2 KS=8 5.330 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg global rows=4 KS=1 4.432 ms, 3.3 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt qkvg global rows=4 KS=2 4.746 ms, 3.1 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg global rows=4 KS=4 5.151 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.6e-07
+gemvt qkvg global rows=4 KS=8 5.160 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg global+xconst rows=1 KS=1 0.384 ms, 38.4 GB/s (1.54x gemv4m), err/rms 3.5e-07
+gemvt qkvg global+xconst rows=1 KS=2 0.348 ms, 42.4 GB/s (1.70x gemv4m), err/rms 2.0e-07
+gemvt qkvg global+xconst rows=1 KS=4 0.372 ms, 39.6 GB/s (1.59x gemv4m), err/rms 1.6e-07
+gemvt qkvg global+xconst rows=1 KS=8 0.359 ms, 41.1 GB/s (1.65x gemv4m), err/rms 1.5e-07
+gemvt qkvg global+xconst rows=2 KS=1 4.619 ms, 3.2 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt qkvg global+xconst rows=2 KS=2 5.115 ms, 2.9 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg global+xconst rows=2 KS=4 5.186 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.6e-07
+gemvt qkvg global+xconst rows=2 KS=8 5.341 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg global+xconst rows=4 KS=1 4.417 ms, 3.3 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt qkvg global+xconst rows=4 KS=2 4.790 ms, 3.1 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg global+xconst rows=4 KS=4 5.113 ms, 2.9 GB/s (0.12x gemv4m), err/rms 1.6e-07
+gemvt qkvg global+xconst rows=4 KS=8 5.188 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg image rows=1 KS=1 0.343 ms, 43.0 GB/s (1.72x gemv4m), err/rms 3.5e-07
+gemvt qkvg image rows=1 KS=2 0.310 ms, 47.6 GB/s (1.91x gemv4m), err/rms 2.0e-07
+gemvt qkvg image rows=1 KS=4 0.456 ms, 32.3 GB/s (1.30x gemv4m), err/rms 1.6e-07
+gemvt qkvg image rows=1 KS=8 0.455 ms, 32.4 GB/s (1.30x gemv4m), err/rms 1.5e-07
+gemvt qkvg image rows=2 KS=1 4.635 ms, 3.2 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt qkvg image rows=2 KS=2 5.083 ms, 2.9 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg image rows=2 KS=4 5.183 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.6e-07
+gemvt qkvg image rows=2 KS=8 5.295 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg image rows=4 KS=1 4.413 ms, 3.3 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt qkvg image rows=4 KS=2 4.742 ms, 3.1 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg image rows=4 KS=4 5.120 ms, 2.9 GB/s (0.12x gemv4m), err/rms 1.6e-07
+gemvt qkvg image rows=4 KS=8 5.152 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg image+xconst rows=1 KS=1 0.332 ms, 44.4 GB/s (1.78x gemv4m), err/rms 3.5e-07
+gemvt qkvg image+xconst rows=1 KS=2 0.309 ms, 47.7 GB/s (1.91x gemv4m), err/rms 2.0e-07
+gemvt qkvg image+xconst rows=1 KS=4 0.455 ms, 32.4 GB/s (1.30x gemv4m), err/rms 1.6e-07
+gemvt qkvg image+xconst rows=1 KS=8 0.456 ms, 32.3 GB/s (1.30x gemv4m), err/rms 1.5e-07
+gemvt qkvg image+xconst rows=2 KS=1 4.657 ms, 3.2 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt qkvg image+xconst rows=2 KS=2 5.090 ms, 2.9 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg image+xconst rows=2 KS=4 5.173 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.6e-07
+gemvt qkvg image+xconst rows=2 KS=8 5.296 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg image+xconst rows=4 KS=1 4.373 ms, 3.4 GB/s (0.14x gemv4m), err/rms 3.5e-07
+gemvt qkvg image+xconst rows=4 KS=2 4.759 ms, 3.1 GB/s (0.12x gemv4m), err/rms 2.0e-07
+gemvt qkvg image+xconst rows=4 KS=4 5.103 ms, 2.9 GB/s (0.12x gemv4m), err/rms 1.6e-07
+gemvt qkvg image+xconst rows=4 KS=8 5.178 ms, 2.8 GB/s (0.11x gemv4m), err/rms 1.5e-07
+gemvt qkvg best image+xconst rows=1 KS=2 0.309 ms, 47.7 GB/s
+gemvt qkvg image+xconst rows=1 KS=2 M=2 1.994 ms (6.45x the best M=1 time), err/rms 2.4e-07
+gemvt qkvg image+xconst rows=1 KS=2 M=4 3.784 ms (12.25x the best M=1 time), err/rms 2.4e-07
+gemvt qkvg image rows=1 KS=2 M=8 7.558 ms (24.46x the best M=1 time), err/rms 1.7e-07
+gemvt qkvg image rows=1 KS=2 M=16 16.833 ms (54.48x the best M=1 time), err/rms 2.5e-07
+gemvt o N=2560 K=4096: gemv4m 0.245 ms, 24.1 GB/s, err/rms 3.3e-07
+gemvt o global rows=1 KS=1 0.158 ms, 37.3 GB/s (1.55x gemv4m), err/rms 3.8e-08
+gemvt o global rows=1 KS=2 0.168 ms, 35.1 GB/s (1.46x gemv4m), err/rms 3.5e-07
+gemvt o global rows=1 KS=4 0.194 ms, 30.4 GB/s (1.26x gemv4m), err/rms 3.5e-07
+gemvt o global rows=1 KS=8 0.150 ms, 39.3 GB/s (1.63x gemv4m), err/rms 2.7e-07
+gemvt o global rows=2 KS=1 1.097 ms, 5.4 GB/s (0.22x gemv4m), err/rms 3.8e-08
+gemvt o global rows=2 KS=2 1.607 ms, 3.7 GB/s (0.15x gemv4m), err/rms 3.5e-07
+gemvt o global rows=2 KS=4 1.875 ms, 3.1 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o global rows=2 KS=8 2.058 ms, 2.9 GB/s (0.12x gemv4m), err/rms 2.7e-07
+gemvt o global rows=4 KS=1 2.154 ms, 2.7 GB/s (0.11x gemv4m), err/rms 3.8e-08
+gemvt o global rows=4 KS=2 1.305 ms, 4.5 GB/s (0.19x gemv4m), err/rms 3.5e-07
+gemvt o global rows=4 KS=4 1.910 ms, 3.1 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o global rows=4 KS=8 1.953 ms, 3.0 GB/s (0.13x gemv4m), err/rms 2.7e-07
+gemvt o global+xconst rows=1 KS=1 0.156 ms, 37.8 GB/s (1.57x gemv4m), err/rms 3.8e-08
+gemvt o global+xconst rows=1 KS=2 0.165 ms, 35.7 GB/s (1.48x gemv4m), err/rms 3.5e-07
+gemvt o global+xconst rows=1 KS=4 0.185 ms, 31.9 GB/s (1.32x gemv4m), err/rms 3.5e-07
+gemvt o global+xconst rows=1 KS=8 0.150 ms, 39.3 GB/s (1.63x gemv4m), err/rms 2.7e-07
+gemvt o global+xconst rows=2 KS=1 1.096 ms, 5.4 GB/s (0.22x gemv4m), err/rms 3.8e-08
+gemvt o global+xconst rows=2 KS=2 1.615 ms, 3.7 GB/s (0.15x gemv4m), err/rms 3.5e-07
+gemvt o global+xconst rows=2 KS=4 1.905 ms, 3.1 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o global+xconst rows=2 KS=8 2.078 ms, 2.8 GB/s (0.12x gemv4m), err/rms 2.7e-07
+gemvt o global+xconst rows=4 KS=1 2.150 ms, 2.7 GB/s (0.11x gemv4m), err/rms 3.8e-08
+gemvt o global+xconst rows=4 KS=2 1.250 ms, 4.7 GB/s (0.20x gemv4m), err/rms 3.5e-07
+gemvt o global+xconst rows=4 KS=4 1.883 ms, 3.1 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o global+xconst rows=4 KS=8 1.938 ms, 3.0 GB/s (0.13x gemv4m), err/rms 2.7e-07
+gemvt o image rows=1 KS=1 0.216 ms, 27.3 GB/s (1.13x gemv4m), err/rms 3.8e-08
+gemvt o image rows=1 KS=2 0.171 ms, 34.5 GB/s (1.43x gemv4m), err/rms 3.5e-07
+gemvt o image rows=1 KS=4 0.204 ms, 28.9 GB/s (1.20x gemv4m), err/rms 3.5e-07
+gemvt o image rows=1 KS=8 0.180 ms, 32.8 GB/s (1.36x gemv4m), err/rms 2.7e-07
+gemvt o image rows=2 KS=1 1.121 ms, 5.3 GB/s (0.22x gemv4m), err/rms 3.8e-08
+gemvt o image rows=2 KS=2 1.625 ms, 3.6 GB/s (0.15x gemv4m), err/rms 3.5e-07
+gemvt o image rows=2 KS=4 1.912 ms, 3.1 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o image rows=2 KS=8 2.077 ms, 2.8 GB/s (0.12x gemv4m), err/rms 2.7e-07
+gemvt o image rows=4 KS=1 2.162 ms, 2.7 GB/s (0.11x gemv4m), err/rms 3.8e-08
+gemvt o image rows=4 KS=2 1.301 ms, 4.5 GB/s (0.19x gemv4m), err/rms 3.5e-07
+gemvt o image rows=4 KS=4 1.872 ms, 3.2 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o image rows=4 KS=8 1.943 ms, 3.0 GB/s (0.13x gemv4m), err/rms 2.7e-07
+gemvt o image+xconst rows=1 KS=1 0.218 ms, 27.0 GB/s (1.12x gemv4m), err/rms 3.8e-08
+gemvt o image+xconst rows=1 KS=2 0.173 ms, 34.1 GB/s (1.42x gemv4m), err/rms 3.5e-07
+gemvt o image+xconst rows=1 KS=4 0.204 ms, 28.9 GB/s (1.20x gemv4m), err/rms 3.5e-07
+gemvt o image+xconst rows=1 KS=8 0.178 ms, 33.1 GB/s (1.38x gemv4m), err/rms 2.7e-07
+gemvt o image+xconst rows=2 KS=1 1.123 ms, 5.3 GB/s (0.22x gemv4m), err/rms 3.8e-08
+gemvt o image+xconst rows=2 KS=2 1.621 ms, 3.6 GB/s (0.15x gemv4m), err/rms 3.5e-07
+gemvt o image+xconst rows=2 KS=4 1.876 ms, 3.1 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o image+xconst rows=2 KS=8 2.096 ms, 2.8 GB/s (0.12x gemv4m), err/rms 2.7e-07
+gemvt o image+xconst rows=4 KS=1 2.154 ms, 2.7 GB/s (0.11x gemv4m), err/rms 3.8e-08
+gemvt o image+xconst rows=4 KS=2 1.299 ms, 4.5 GB/s (0.19x gemv4m), err/rms 3.5e-07
+gemvt o image+xconst rows=4 KS=4 1.885 ms, 3.1 GB/s (0.13x gemv4m), err/rms 3.5e-07
+gemvt o image+xconst rows=4 KS=8 1.946 ms, 3.0 GB/s (0.13x gemv4m), err/rms 2.7e-07
+gemvt o best global rows=1 KS=8 0.150 ms, 39.3 GB/s
+gemvt o global rows=1 KS=8 M=2 0.800 ms (5.33x the best M=1 time), err/rms 2.4e-07
+gemvt o global rows=1 KS=8 M=4 1.504 ms (10.03x the best M=1 time), err/rms 2.7e-07
+gemvt o global rows=1 KS=8 M=8 3.049 ms (20.33x the best M=1 time), err/rms 2.9e-07
+gemvt o global rows=1 KS=8 M=16 6.715 ms (44.76x the best M=1 time), err/rms 2.8e-07
+gemvt gu N=14336 K=2560: gemv4m 0.827 ms, 25.0 GB/s, err/rms 2.2e-07
+gemvt gu global rows=1 KS=1 0.488 ms, 42.3 GB/s (1.70x gemv4m), err/rms 5.2e-07
+gemvt gu global rows=1 KS=2 0.477 ms, 43.3 GB/s (1.73x gemv4m), err/rms 6.9e-07
+gemvt gu global rows=1 KS=4 0.505 ms, 40.9 GB/s (1.64x gemv4m), err/rms 3.3e-07
+gemvt gu global rows=1 KS=8 0.502 ms, 41.1 GB/s (1.65x gemv4m), err/rms 2.2e-07
+gemvt gu global rows=2 KS=1 6.991 ms, 3.0 GB/s (0.12x gemv4m), err/rms 5.2e-07
+gemvt gu global rows=2 KS=2 7.078 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu global rows=2 KS=4 7.353 ms, 2.8 GB/s (0.11x gemv4m), err/rms 3.3e-07
+gemvt gu global rows=2 KS=8 7.470 ms, 2.8 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu global rows=4 KS=1 7.717 ms, 2.7 GB/s (0.11x gemv4m), err/rms 5.2e-07
+gemvt gu global rows=4 KS=2 7.074 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu global rows=4 KS=4 7.063 ms, 2.9 GB/s (0.12x gemv4m), err/rms 3.3e-07
+gemvt gu global rows=4 KS=8 7.341 ms, 2.8 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu global+xconst rows=1 KS=1 0.486 ms, 42.5 GB/s (1.70x gemv4m), err/rms 5.2e-07
+gemvt gu global+xconst rows=1 KS=2 0.473 ms, 43.7 GB/s (1.75x gemv4m), err/rms 6.9e-07
+gemvt gu global+xconst rows=1 KS=4 0.504 ms, 41.0 GB/s (1.64x gemv4m), err/rms 3.3e-07
+gemvt gu global+xconst rows=1 KS=8 0.501 ms, 41.2 GB/s (1.65x gemv4m), err/rms 2.2e-07
+gemvt gu global+xconst rows=2 KS=1 7.042 ms, 2.9 GB/s (0.12x gemv4m), err/rms 5.2e-07
+gemvt gu global+xconst rows=2 KS=2 7.106 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu global+xconst rows=2 KS=4 7.348 ms, 2.8 GB/s (0.11x gemv4m), err/rms 3.3e-07
+gemvt gu global+xconst rows=2 KS=8 7.489 ms, 2.8 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu global+xconst rows=4 KS=1 7.698 ms, 2.7 GB/s (0.11x gemv4m), err/rms 5.2e-07
+gemvt gu global+xconst rows=4 KS=2 7.031 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu global+xconst rows=4 KS=4 7.127 ms, 2.9 GB/s (0.12x gemv4m), err/rms 3.3e-07
+gemvt gu global+xconst rows=4 KS=8 7.379 ms, 2.8 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu image rows=1 KS=1 0.465 ms, 44.4 GB/s (1.78x gemv4m), err/rms 5.2e-07
+gemvt gu image rows=1 KS=2 0.414 ms, 49.9 GB/s (2.00x gemv4m), err/rms 6.9e-07
+gemvt gu image rows=1 KS=4 0.629 ms, 32.8 GB/s (1.32x gemv4m), err/rms 3.3e-07
+gemvt gu image rows=1 KS=8 0.643 ms, 32.1 GB/s (1.29x gemv4m), err/rms 2.2e-07
+gemvt gu image rows=2 KS=1 6.994 ms, 3.0 GB/s (0.12x gemv4m), err/rms 5.2e-07
+gemvt gu image rows=2 KS=2 7.116 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu image rows=2 KS=4 7.303 ms, 2.8 GB/s (0.11x gemv4m), err/rms 3.3e-07
+gemvt gu image rows=2 KS=8 7.486 ms, 2.8 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu image rows=4 KS=1 7.683 ms, 2.7 GB/s (0.11x gemv4m), err/rms 5.2e-07
+gemvt gu image rows=4 KS=2 7.064 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu image rows=4 KS=4 7.136 ms, 2.9 GB/s (0.12x gemv4m), err/rms 3.3e-07
+gemvt gu image rows=4 KS=8 7.400 ms, 2.8 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu image+xconst rows=1 KS=1 0.460 ms, 44.9 GB/s (1.80x gemv4m), err/rms 5.2e-07
+gemvt gu image+xconst rows=1 KS=2 0.416 ms, 49.6 GB/s (1.99x gemv4m), err/rms 6.9e-07
+gemvt gu image+xconst rows=1 KS=4 0.624 ms, 33.1 GB/s (1.33x gemv4m), err/rms 3.3e-07
+gemvt gu image+xconst rows=1 KS=8 0.641 ms, 32.2 GB/s (1.29x gemv4m), err/rms 2.2e-07
+gemvt gu image+xconst rows=2 KS=1 7.028 ms, 2.9 GB/s (0.12x gemv4m), err/rms 5.2e-07
+gemvt gu image+xconst rows=2 KS=2 7.175 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu image+xconst rows=2 KS=4 7.309 ms, 2.8 GB/s (0.11x gemv4m), err/rms 3.3e-07
+gemvt gu image+xconst rows=2 KS=8 7.517 ms, 2.7 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu image+xconst rows=4 KS=1 7.699 ms, 2.7 GB/s (0.11x gemv4m), err/rms 5.2e-07
+gemvt gu image+xconst rows=4 KS=2 7.092 ms, 2.9 GB/s (0.12x gemv4m), err/rms 6.9e-07
+gemvt gu image+xconst rows=4 KS=4 7.079 ms, 2.9 GB/s (0.12x gemv4m), err/rms 3.3e-07
+gemvt gu image+xconst rows=4 KS=8 7.353 ms, 2.8 GB/s (0.11x gemv4m), err/rms 2.2e-07
+gemvt gu best image rows=1 KS=2 0.414 ms, 49.9 GB/s
+gemvt gu image rows=1 KS=2 M=2 2.756 ms (6.66x the best M=1 time), err/rms 6.0e-07
+gemvt gu image rows=1 KS=2 M=4 5.213 ms (12.59x the best M=1 time), err/rms 4.7e-07
+gemvt gu image rows=1 KS=2 M=8 10.795 ms (26.08x the best M=1 time), err/rms 4.1e-07
+gemvt gu image rows=1 KS=2 M=16 23.131 ms (55.88x the best M=1 time), err/rms 3.3e-07
+gemvt down N=2560 K=7168: gemv4m 0.408 ms, 25.3 GB/s, err/rms 1.6e-06
+gemvt down global rows=1 KS=1 0.276 ms, 37.4 GB/s (1.48x gemv4m), err/rms 1.6e-06
+gemvt down global rows=1 KS=2 0.289 ms, 35.7 GB/s (1.41x gemv4m), err/rms 9.0e-07
+gemvt down global rows=1 KS=4 0.307 ms, 33.6 GB/s (1.33x gemv4m), err/rms 5.8e-06
+gemvt down global rows=1 KS=8 0.257 ms, 40.2 GB/s (1.59x gemv4m), err/rms 1.9e-06
+gemvt down global rows=2 KS=1 1.907 ms, 5.4 GB/s (0.21x gemv4m), err/rms 1.6e-06
+gemvt down global rows=2 KS=2 2.808 ms, 3.7 GB/s (0.15x gemv4m), err/rms 9.0e-07
+gemvt down global rows=2 KS=4 3.286 ms, 3.1 GB/s (0.12x gemv4m), err/rms 5.8e-06
+gemvt down global rows=2 KS=8 3.605 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.9e-06
+gemvt down global rows=4 KS=1 3.777 ms, 2.7 GB/s (0.11x gemv4m), err/rms 1.6e-06
+gemvt down global rows=4 KS=2 2.181 ms, 4.7 GB/s (0.19x gemv4m), err/rms 9.0e-07
+gemvt down global rows=4 KS=4 3.309 ms, 3.1 GB/s (0.12x gemv4m), err/rms 5.8e-06
+gemvt down global rows=4 KS=8 3.399 ms, 3.0 GB/s (0.12x gemv4m), err/rms 1.9e-06
+gemvt down global+xconst rows=1 KS=1 0.276 ms, 37.4 GB/s (1.48x gemv4m), err/rms 1.6e-06
+gemvt down global+xconst rows=1 KS=2 0.290 ms, 35.6 GB/s (1.41x gemv4m), err/rms 9.0e-07
+gemvt down global+xconst rows=1 KS=4 0.305 ms, 33.9 GB/s (1.34x gemv4m), err/rms 5.8e-06
+gemvt down global+xconst rows=1 KS=8 0.257 ms, 40.2 GB/s (1.59x gemv4m), err/rms 1.9e-06
+gemvt down global+xconst rows=2 KS=1 1.913 ms, 5.4 GB/s (0.21x gemv4m), err/rms 1.6e-06
+gemvt down global+xconst rows=2 KS=2 2.800 ms, 3.7 GB/s (0.15x gemv4m), err/rms 9.0e-07
+gemvt down global+xconst rows=2 KS=4 3.286 ms, 3.1 GB/s (0.12x gemv4m), err/rms 5.8e-06
+gemvt down global+xconst rows=2 KS=8 3.576 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.9e-06
+gemvt down global+xconst rows=4 KS=1 3.773 ms, 2.7 GB/s (0.11x gemv4m), err/rms 1.6e-06
+gemvt down global+xconst rows=4 KS=2 2.278 ms, 4.5 GB/s (0.18x gemv4m), err/rms 9.0e-07
+gemvt down global+xconst rows=4 KS=4 3.304 ms, 3.1 GB/s (0.12x gemv4m), err/rms 5.8e-06
+gemvt down global+xconst rows=4 KS=8 3.417 ms, 3.0 GB/s (0.12x gemv4m), err/rms 1.9e-06
+gemvt down image rows=1 KS=1 0.384 ms, 26.9 GB/s (1.06x gemv4m), err/rms 1.6e-06
+gemvt down image rows=1 KS=2 0.310 ms, 33.3 GB/s (1.32x gemv4m), err/rms 9.0e-07
+gemvt down image rows=1 KS=4 0.362 ms, 28.5 GB/s (1.13x gemv4m), err/rms 5.8e-06
+gemvt down image rows=1 KS=8 0.310 ms, 33.3 GB/s (1.32x gemv4m), err/rms 1.9e-06
+gemvt down image rows=2 KS=1 1.950 ms, 5.3 GB/s (0.21x gemv4m), err/rms 1.6e-06
+gemvt down image rows=2 KS=2 2.822 ms, 3.7 GB/s (0.14x gemv4m), err/rms 9.0e-07
+gemvt down image rows=2 KS=4 3.268 ms, 3.2 GB/s (0.12x gemv4m), err/rms 5.8e-06
+gemvt down image rows=2 KS=8 3.617 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.9e-06
+gemvt down image rows=4 KS=1 3.792 ms, 2.7 GB/s (0.11x gemv4m), err/rms 1.6e-06
+gemvt down image rows=4 KS=2 2.173 ms, 4.8 GB/s (0.19x gemv4m), err/rms 9.0e-07
+gemvt down image rows=4 KS=4 3.262 ms, 3.2 GB/s (0.13x gemv4m), err/rms 5.8e-06
+gemvt down image rows=4 KS=8 3.381 ms, 3.1 GB/s (0.12x gemv4m), err/rms 1.9e-06
+gemvt down image+xconst rows=1 KS=1 0.389 ms, 26.5 GB/s (1.05x gemv4m), err/rms 1.6e-06
+gemvt down image+xconst rows=1 KS=2 0.309 ms, 33.4 GB/s (1.32x gemv4m), err/rms 9.0e-07
+gemvt down image+xconst rows=1 KS=4 0.357 ms, 28.9 GB/s (1.14x gemv4m), err/rms 5.8e-06
+gemvt down image+xconst rows=1 KS=8 0.310 ms, 33.3 GB/s (1.32x gemv4m), err/rms 1.9e-06
+gemvt down image+xconst rows=2 KS=1 1.954 ms, 5.3 GB/s (0.21x gemv4m), err/rms 1.6e-06
+gemvt down image+xconst rows=2 KS=2 2.815 ms, 3.7 GB/s (0.14x gemv4m), err/rms 9.0e-07
+gemvt down image+xconst rows=2 KS=4 3.287 ms, 3.1 GB/s (0.12x gemv4m), err/rms 5.8e-06
+gemvt down image+xconst rows=2 KS=8 3.618 ms, 2.9 GB/s (0.11x gemv4m), err/rms 1.9e-06
+gemvt down image+xconst rows=4 KS=1 3.770 ms, 2.7 GB/s (0.11x gemv4m), err/rms 1.6e-06
+gemvt down image+xconst rows=4 KS=2 2.171 ms, 4.8 GB/s (0.19x gemv4m), err/rms 9.0e-07
+gemvt down image+xconst rows=4 KS=4 3.249 ms, 3.2 GB/s (0.13x gemv4m), err/rms 5.8e-06
+gemvt down image+xconst rows=4 KS=8 3.390 ms, 3.0 GB/s (0.12x gemv4m), err/rms 1.9e-06
+gemvt down best global+xconst rows=1 KS=8 0.257 ms, 40.2 GB/s
+gemvt down global+xconst rows=1 KS=8 M=2 1.347 ms (5.25x the best M=1 time), err/rms 2.4e-07
+gemvt down global rows=1 KS=8 M=4 2.593 ms (10.10x the best M=1 time), err/rms 4.9e-07
+gemvt down global rows=1 KS=8 M=8 5.354 ms (20.85x the best M=1 time), err/rms 4.4e-07
+gemvt down global rows=1 KS=8 M=16 11.630 ms (45.29x the best M=1 time), err/rms 3.9e-07
