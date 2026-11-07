@@ -1025,10 +1025,9 @@ void GpuDorySession::sublayer(size_t li, int m, int64_t pos0, int inst, bool sto
   const int k_off = m * Q, v_off = m * (Q + KV), g_off = m * (Q + 2 * KV);
   G_.matmul({&L.q, &L.k, &L.v, &L.g}, x_, m, proj_, 0);
   auto rope = G_.kernel(kDoryCl, "", "rope_norm");
-  Mem none = nullptr;
   G_.launch(rope, {size_t(m) * c.heads * (d / 2), 1}, {size_t(d / 2), 1}, proj_, 0, rope_[L.kind], m, c.heads, d, V.qscale, 1);
   G_.launch(rope, {size_t(m) * c.kv_heads * (d / 2), 1}, {size_t(d / 2), 1}, proj_, k_off, rope_[L.kind], m, c.kv_heads, d,
-            none, 0);
+            V.qscale, 0);   // a real buffer: the Adreno driver crashes on a NULL buffer argument
   const Cache& K = caches_[size_t(L.attn)][size_t(inst)];
   const int64_t p0 = pos0, slots = K.slots;   // OpenCL long
   const int ring = K.ring ? 1 : 0, window = L.window;
