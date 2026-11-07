@@ -83,6 +83,65 @@ __kernel void gemv16(__global const ushort*w,__global const float*x,__global flo
     for(int step=16;step;step/=2){if(lane<step)sums[lid]+=sums[lid+step];barrier(CLK_LOCAL_MEM_FENCE);}
     if(lane==0&&row<N)y[offset+row]=sums[lid];
 }
+// 2..MRMAX activation rows at once (verifying speculative drafts): the weights are read and decoded once and used
+// for every row, so the call costs about what one row does. Same layout as gemv4 / gemv16; the outputs of a
+// projection are an [m][n] block (gemm4's layout). Loops over rows are unrolled so the accumulators stay registers.
+#define MRMAX 16
+float lanes32(float v,__local float*sums,int lid,int lane){
+    sums[lid]=v;barrier(CLK_LOCAL_MEM_FENCE);
+    for(int step=16;step;step/=2){if(lane<step)sums[lid]+=sums[lid+step];barrier(CLK_LOCAL_MEM_FENCE);}
+    float r=sums[lid-lane];barrier(CLK_LOCAL_MEM_FENCE);
+    return r;
+}
+__kernel void gemvm(__global const uchar*c0,__global const uchar*s0,
+                    __global const uchar*c1,__global const uchar*s1,
+                    __global const uchar*c2,__global const uchar*s2,
+                    __global const uchar*c3,__global const uchar*s3,
+                    __global const float*x,__global float*y,int K,int4 counts,float4 scales,int off,int m){
+    int lid=get_local_id(0),lane=lid&31,outrow=get_group_id(0)*4+lid/32;
+    int row=outrow,N=counts.x+counts.y+counts.z+counts.w,base=0,n=counts.x;
+    __global const uchar*c=c0;__global const uchar*s=s0;float scale=scales.x;
+    if(row>=counts.x){row-=counts.x;base=counts.x;n=counts.y;c=c1;s=s1;scale=scales.y;
+        if(row>=counts.y){row-=counts.y;base+=counts.y;n=counts.z;c=c2;s=s2;scale=scales.z;
+            if(row>=counts.z){row-=counts.z;base+=counts.z;n=counts.w;c=c3;s=s3;scale=scales.w;}}}
+    float4 acc[MRMAX];
+#pragma unroll
+    for(int r=0;r<MRMAX;r++)acc[r]=0;
+    if(outrow<N)for(int g=lane;g<K/16;g+=32){
+        ushort4 v=vload4(0,(__global const ushort*)(c+(size_t)row*(K/2)+g*8));
+        float sc=fp8(s[(size_t)row*(K/16)+g]);
+        float4 w0=unpack4(v.x)*sc,w1=unpack4(v.y)*sc,w2=unpack4(v.z)*sc,w3=unpack4(v.w)*sc;
+#pragma unroll
+        for(int r=0;r<MRMAX;r++)if(r<m){
+            __global const float*xr=x+(size_t)r*K+g*16;
+            acc[r]=mad(w0,vload4(0,xr),acc[r]);acc[r]=mad(w1,vload4(1,xr),acc[r]);
+            acc[r]=mad(w2,vload4(2,xr),acc[r]);acc[r]=mad(w3,vload4(3,xr),acc[r]);
+        }
+    }
+    __local float sums[128];
+#pragma unroll
+    for(int r=0;r<MRMAX;r++)if(r<m){
+        float sum=lanes32(acc[r].x+acc[r].y+acc[r].z+acc[r].w,sums,lid,lane);
+        if(lane==0&&outrow<N)y[off+(size_t)base*m+(size_t)r*n+row]=sum*scale;
+    }
+}
+__kernel void gemv16m(__global const ushort*w,__global const float*x,__global float*y,int K,int N,int m){
+    int lid=get_local_id(0),lane=lid&31,row=get_group_id(0)*4+lid/32;
+    float4 acc[MRMAX];
+#pragma unroll
+    for(int r=0;r<MRMAX;r++)acc[r]=0;
+    if(row<N)for(int k=lane*4;k<K;k+=128){
+        float4 v=as_float4(convert_uint4(vload4(0,w+(size_t)row*K+k))<<16);
+#pragma unroll
+        for(int r=0;r<MRMAX;r++)if(r<m)acc[r]=mad(v,vload4(0,x+(size_t)r*K+k),acc[r]);
+    }
+    __local float sums[128];
+#pragma unroll
+    for(int r=0;r<MRMAX;r++)if(r<m){
+        float sum=lanes32(acc[r].x+acc[r].y+acc[r].z+acc[r].w,sums,lid,lane);
+        if(lane==0&&row<N)y[(size_t)r*N+row]=sum;
+    }
+}
 // 64x64 output tile, K=32, 4x4 FP32 accumulators per thread. No activation quantization.
 __kernel void gemm4(__global const uchar*c,__global const uchar*s,__global const float*x,
                    __global float*y,int K,int N,int M,float scale,int offset){
@@ -173,7 +232,7 @@ struct OpenClBackend::Impl {
   cl_context context = nullptr;
   cl_command_queue queue = nullptr;
   cl_program program = nullptr;
-  cl_kernel gemv4 = nullptr, gemm4 = nullptr, gemv16 = nullptr, gemm16 = nullptr;
+  cl_kernel gemv4 = nullptr, gemm4 = nullptr, gemv16 = nullptr, gemm16 = nullptr, gemvm = nullptr, gemv16m = nullptr;
   cl_mem input = nullptr, output = nullptr;
   size_t input_size = 0, output_size = 0, weight_size = 0;
   double decode_nv_s = 0, decode_bf_s = 0;
@@ -204,7 +263,7 @@ struct OpenClBackend::Impl {
     }
     if (input) clReleaseMemObject(input);
     if (output) clReleaseMemObject(output);
-    for (auto k : {gemv4, gemm4, gemv16, gemm16})
+    for (auto k : {gemv4, gemm4, gemv16, gemm16, gemvm, gemv16m})
       if (k) clReleaseKernel(k);
     for (auto& [key, k] : kernels) clReleaseKernel(k);
     for (auto& [key, p] : programs) clReleaseProgram(p);
@@ -259,6 +318,8 @@ struct OpenClBackend::Impl {
     gemm4 = create("gemm4");
     gemv16 = create("gemv16");
     gemm16 = create("gemm16");
+    gemvm = create("gemvm");
+    gemv16m = create("gemv16m");
     log("OpenCL device: %s (FP32 accumulation, packed weights)", name.c_str());
   }
   cl_mem copy(const void* data, size_t bytes) {
@@ -490,29 +551,31 @@ void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, Mem x, int
     XTG_CHECK(w->k == K, "GPU input widths differ");
     prepare(*w);
   }
-  if (m == 1) {
+  if (m <= 16) {   // one row: gemv4; up to 16 (a verify step): gemvm, the weights still read once
     XTG_CHECK(ws.size() <= 4, "GPU decode supports at most four fused projections");
+    cl_kernel k = m == 1 ? p.gemv4 : p.gemvm;
     cl_int4 counts{};
     cl_float4 scales{};
     int total = 0;
     for (int j = 0; j < 4; ++j) {
       const auto& w = *ws[j < int(ws.size()) ? j : 0];
       auto b = p.weights.at(w.codes);
-      p.arg(p.gemv4, j * 2, b.codes);
-      p.arg(p.gemv4, j * 2 + 1, b.scales);
+      p.arg(k, j * 2, b.codes);
+      p.arg(k, j * 2 + 1, b.scales);
       if (j < int(ws.size())) {
         counts.s[j] = w.n_out;
         scales.s[j] = w.global;
         total += w.n_out;
       }
     }
-    p.arg(p.gemv4, 8, x);
-    p.arg(p.gemv4, 9, y);
-    p.arg(p.gemv4, 10, K);
-    p.arg(p.gemv4, 11, counts);
-    p.arg(p.gemv4, 12, scales);
-    p.arg(p.gemv4, 13, int(y_offset));
-    p.dispatch(p.gemv4, 1, total);
+    p.arg(k, 8, x);
+    p.arg(k, 9, y);
+    p.arg(k, 10, K);
+    p.arg(k, 11, counts);
+    p.arg(k, 12, scales);
+    p.arg(k, 13, int(y_offset));
+    if (m > 1) p.arg(k, 14, m);
+    p.dispatch(k, 1, total);
     return;
   }
   size_t offset = y_offset;
@@ -534,6 +597,16 @@ void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, Mem x, int
 void OpenClBackend::matmul(const Bf16Weight& w, Mem x, int m, Mem y) {
   prepare(w);
   auto& p = *impl_;
+  if (m > 1 && m <= 16) {
+    p.arg(p.gemv16m, 0, p.weights.at(w.data).codes);
+    p.arg(p.gemv16m, 1, x);
+    p.arg(p.gemv16m, 2, y);
+    p.arg(p.gemv16m, 3, w.k);
+    p.arg(p.gemv16m, 4, w.n_out);
+    p.arg(p.gemv16m, 5, m);
+    p.dispatch(p.gemv16m, 1, w.n_out);
+    return;
+  }
   cl_kernel k = m == 1 ? p.gemv16 : p.gemm16;
   p.arg(k, 0, p.weights.at(w.data).codes);
   p.arg(k, 1, x);
