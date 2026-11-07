@@ -149,11 +149,22 @@ GPU 本身（`tests/gpu_probe`）：读 66 GB/s；峰值 FP32 2.81、FP16 5.61 T
 | 步 | 内容 | 门槛 |
 |---|---|---|
 | N1 | NPU 线性层接进引擎：QNN HTP 运行时随 APK；38 个段的上下文二进制（折叠、W8A16、M = 768，尾块补齐或另备 M = 256 的图）；段的输入输出用原生 16 位张量（rpcmem / dmabuf，GPU 用 `cl_qcom_dmabuf_host_ptr` 零拷贝），中间不回 CPU | 和 GPU 路径比 prefill 后的 logits（top-1 一致率、KL）；PPL 差 < 0.5%；线性层 ≥ 330 tok/s |
-| N2 | GPU prefill 注意力（两条路线都要）：flash-attention 式分块，FP8 K / V 在内核里解码，q·k FP32 累加、在线 softmax、P·V 用 FP16；一个 KV 头的 4 个 q 头共用 K / V | 325 / 919 / 2738 token 提示的贪心输出和现在一致；16K 深度 ≥ 1.5 TFLOP/s |
+| N2 | GPU prefill 注意力（两条路线都要）：flash-attention 式分块，FP8 K / V 在内核里解码，q·k FP32 累加、在线 softmax、P·V 用 FP16；一个 KV 头的 4 个 q 头共用 K / V | 325 / 919 / 2738 token 提示的贪心输出和现在一致；16K 深度 ≥ 1.5 TFLOP/s。**11-08 前两步**（`attend_rows`：4 行 × 4 个 q 头一组，缓存的 key 每块解码一次进 local，子组规约）：8K 提示 prefill 8.8 → 25.9 tok/s（注意力 755 → 156 s），325 token 31.8 → 42，输出不变。现在 8K 时注意力和矩阵乘各占一半；内核约 80 GFLOP/s，受占用率限制（每组 27 KB local，每个计算单元只跑一组），再往上要做微基准 |
 | N3 | NPU / GPU 流水：块 i 的注意力在 GPU 上算时，块 i+1 的段在 NPU 上算。按层错开即可：块 i+1 第 l 层的注意力只用到块 i 第 l 层的 K / V | 同时跑的速度 ≥ 单独跑时较慢那一边的 85% |
 | N4 | NPU 上剩下的逐元素运算：nGPT 的归一化 + slerp 写成 HVX 自定义算子（QNN op package），或 MLP 中间激活改 8 位（要 A/B） | 768 一块每段 ≤ 30 ms |
 | G6 | GPU int8 点积矩阵乘（W4A8）：E2M1 × 2 是不超过 12 的整数，权重放进 int8 不丢精度；激活每 16 / 32 个一组动态量化；点积后乘块缩放，进 FP32 累加。路线 G 的主力，路线 N 的备用 | gpu_probe ≥ 3 TOP/s；A/B 通过 |
 | N5 | （研究）把一部分注意力挪到 NPU：滑窗层形状固定，最好做；全局层要按 KV 长度分桶的静态图，外加一份 FP16 的 K / V | 32K 深度的 prefill 有提升才继续 |
+
+### 用一点精度换速度（11-08 讨论）
+
+| 做法 | decode | prefill | 精度代价 | 结论 |
+|---|---:|---|---|---|
+| 线性层 NVFP4 → MXFP4 | +5% | — | 比 NVFP4 差（每 32 个一个 2 的幂缩放），只能从 NVFP4 再量化 | 不做 |
+| lm_head BF16 → FP8 / 4 bit（G5） | +10% / +16% | — | 小（lm_head 占每 token 读取的 19%） | 做，A/B |
+| GPU int8 激活（W4A8，G6） | 验证步更便宜 | GPU 矩阵乘可快 4–6 倍 | 小（权重放进 int8 不丢精度，激活每 32 个一组） | 做，A/B |
+| NPU 权重 4 bit（LPBQ） | — | +15%，省 1.6 GiB | 接近 NVFP4（要先修分块量化） | 做，A/B |
+| 线性层 3 bit | 约 +22% | — | 4B 模型降 3 bit 损失明显 | 先不做 |
+| 只跑 1 个循环 | +41% | 约 +40% | SWE-bench 59.5 → 50.3 | 不做 |
 
 ### 前缀缓存（P1，小改动）
 

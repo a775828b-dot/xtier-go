@@ -197,6 +197,7 @@ DEV 面板的「NPU 自检」或 `am start ... --ez npu_selftest true` 会从 Ap
 | `gpu_probe.txt` | GPU 摸底完整输出 |
 | `engine-{cpu,gpu-linear,gpu}.txt` | 325 token generate，三个后端，含 GPU kernel 计时 |
 | `engine-gpu-8k.txt` | 8000 token 提示，gpu 后端，per_loop |
+| `engine-gpu-8k-n2.txt` | N2 前两步之后的 8000 token 提示（prefill 25.9 tok/s） |
 | `engine-gpu-g1.txt`、`gpu_probe-gemvt.txt` | G1 第一步（k-major GEMV）之后的 325 token generate，和 GEMV 各写法的探针结果 |
 | `spec-k{0,8}-server.txt`、`spec-k{0,8}-status.json` | 照抄请求，spec_k 0 / 8 的 kernel 计时和 `/xtg/status` |
 | `npu-run1-*.txt` | 第一轮：环境、平台校验、App 域检查、每个模型的时间和内存 |
