@@ -69,4 +69,8 @@ if(XTG_TESTS)
   # Explicit device test: normal CPU CI does not require an OpenCL GPU.
   add_executable(opencl_test tests/opencl_test.cpp)
   target_link_libraries(opencl_test PRIVATE xtg_engine)
+  # GPU building blocks on the device (launch overhead, bandwidth, multi-row NVFP4 GEMV, peaks); not run by CI
+  add_executable(gpu_probe tests/gpu_probe.cpp)
+  target_include_directories(gpu_probe PRIVATE third_party/OpenCL)
+  target_link_libraries(gpu_probe PRIVATE xtg_engine)
 endif()
