@@ -112,7 +112,8 @@ Config parse_config(const json& c, const std::string& dir) {
 }
 
 struct Options {
-  bool gpu = false;
+  bool gpu = false;        // an OpenCL device holds the weights
+  bool resident = false;   // ... and the whole step (gpu); else only the linear layers (gpu-linear)
   int loops = 1;
   bool per_loop = true;
   KvDtype kv_dtype = KvDtype::FP8;
@@ -124,8 +125,10 @@ struct Options {
 Options parse_options(const Config& c, const json& o) {
   Options p;
   const auto backend = get_str(o, "backend", "cpu");
-  XTG_CHECK(backend == "cpu" || backend == "gpu", "backend: %s (cpu | gpu)", backend.c_str());
-  p.gpu = backend == "gpu";
+  XTG_CHECK(backend == "cpu" || backend == "gpu" || backend == "gpu-linear", "backend: %s (cpu | gpu | gpu-linear)",
+            backend.c_str());
+  p.gpu = backend != "cpu";
+  p.resident = backend == "gpu";
   p.loops = int(get_int(o, "loops", c.default_loops));
   XTG_CHECK(p.loops >= 1 && p.loops <= 4, "loops: %d (1..4)", p.loops);
   std::string mode = get_str(o, "kv_mode", c.default_kv_mode);
@@ -252,6 +255,56 @@ class DorySession : public Session {
   std::vector<float> x_, input_, state_, hq_, hk_, hv_, hg_, ha_, ho_, mg_, mu_, logits_;
 };
 
+// The same forward with everything on the OpenCL device (backend=gpu): activations and the KV caches stay in
+// device buffers, every operation is a queued kernel, and the host only uploads the embeddings / RoPE tables of a
+// chunk and reads back the logits it asked for. FP32 activations and accumulation, the CPU session's formulas.
+class GpuDorySession : public Session {
+ public:
+  explicit GpuDorySession(DoryModel& m);
+  ~GpuDorySession() override;
+  int64_t n_past() const override { return n_; }
+  void forward(const int32_t* tokens, int n, Logits want, const LogitsFn& on_logits) override;
+  bool rewind(int64_t n) override;
+  void snapshot(int slot) override;
+  bool restore(int slot) override;
+  int64_t snapshot_pos(int slot) const override {
+    return slot >= 0 && slot < int(snaps_.size()) ? snaps_[size_t(slot)].pos : -1;
+  }
+  int snapshot_slots() const override { return int(snaps_.size()); }
+  void reset() override;
+  size_t kv_bytes() const override;
+
+ private:
+  using Mem = OpenClBackend::Mem;
+  struct Cache {   // FP8 rows [slots][kv_heads][head_dim], one scale per (slot, head)
+    Mem k = nullptr, v = nullptr, ks = nullptr, vs = nullptr;
+    int64_t slots = 0;
+    bool ring = false;
+  };
+  struct Vecs {   // a layer's vectors on the device
+    Mem lr = nullptr, qscale = nullptr, gscale = nullptr, sg = nullptr, su = nullptr;
+  };
+  void run_chunk(const int32_t* tokens, int m, int64_t pos0);
+  void sublayer(size_t li, int m, int64_t pos0, int inst, bool store);
+  Mem upload(const std::vector<float>& v);
+  size_t cache_bytes(const Cache& c) const;
+  void drop_snapshots_above(int64_t pos);
+
+  DoryModel& M_;
+  OpenClBackend& G_;
+  int64_t n_ = 0;
+  std::vector<std::vector<Cache>> caches_;   // [attention layer][instance]
+  std::vector<Vecs> vecs_;                   // per physical layer
+  struct Snap {
+    int64_t pos = -1;
+    std::vector<Cache> rings;
+  };
+  std::vector<Snap> snaps_;
+  Mem x_ = nullptr, input_ = nullptr, state_ = nullptr, proj_ = nullptr, att_ = nullptr, gu_ = nullptr, o_ = nullptr;
+  Mem rope_[3] = {nullptr, nullptr, nullptr}, hx_ = nullptr, logits_dev_ = nullptr;
+  std::vector<float> host_, logits_;
+};
+
 class DoryModel : public Model {
  public:
   DoryModel(const std::string& dir, const json& config, const json& options, ThreadPool& pool)
@@ -321,7 +374,7 @@ class DoryModel : public Model {
                           {"context", o.context},
                           {"prefill_chunk", o.chunk},
                           {"snapshots", o.snapshots},
-                          {"kernels", o.gpu ? "opencl-linear+neon" : kernel_set_name()},
+                          {"kernels", o.resident ? "opencl" : o.gpu ? "opencl-linear+neon" : kernel_set_name()},
                           {"gpu_device", gpu ? gpu->device_name() : ""},
                           {"threads", pool.size()},
                           {"memory", mem}};
@@ -331,7 +384,7 @@ class DoryModel : public Model {
   }
 
   const ModelInfo& info() const override { return info_; }
-  std::unique_ptr<Session> new_session() override { return std::make_unique<DorySession>(*this); }
+  std::unique_ptr<Session> new_session() override;
   void matmul(const std::vector<const Nvfp4Weight*>& ws, const float* x, int m, const std::vector<float*>& ys) {
     if (gpu) gpu->matmul(ws, x, m, ys);
     else matmul_nvfp4(pool, ws, x, m, ys);
@@ -567,6 +620,449 @@ size_t DorySession::kv_bytes() const {
     for (const auto& cache : layer) b += cache->used_bytes(n_);
   for (const Snap& s : snaps_)
     for (const auto& r : s.rings) b += r.size();
+  return b;
+}
+
+// --- GPU-resident session ---
+
+std::unique_ptr<Session> DoryModel::new_session() {
+  if (o.resident) return std::make_unique<GpuDorySession>(*this);
+  return std::make_unique<DorySession>(*this);
+}
+
+// Row kernels run one work-group per row (or per row and head); every norm is justnorm: x / sqrt(sum x^2 + 1e-6).
+const char* kDoryCl = R"CLC(
+float wg_sum(float v, __local float* red) {
+  const int t = get_local_id(0), n = get_local_size(0);
+  red[t] = v;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (int s = n / 2; s > 0; s >>= 1) {
+    if (t < s) red[t] += red[t + s];
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  float r = red[0];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  return r;
+}
+float wg_max(float v, __local float* red) {
+  const int t = get_local_id(0), n = get_local_size(0);
+  red[t] = v;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (int s = n / 2; s > 0; s >>= 1) {
+    if (t < s) red[t] = fmax(red[t], red[t + s]);
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  float r = red[0];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  return r;
+}
+
+// out = justnorm(a + b) (add) or justnorm(a); out may be a
+__kernel void add_norm(__global float* a, __global const float* b, __global float* out, int w, int add) {
+  __local float red[256];
+  const int t = get_local_id(0);
+  const size_t r = get_group_id(0) * (size_t)w;
+  float s = 0;
+  for (int j = t; j < w; j += 256) { float v = a[r + j] + (add ? b[r + j] : 0.f); s += v * v; }
+  const float f = 1.f / sqrt(wg_sum(s, red) + 1e-6f);
+  for (int j = t; j < w; j += 256) out[r + j] = (a[r + j] + (add ? b[r + j] : 0.f)) * f;
+}
+
+// x = justnorm(norm(x) + lr * (norm(o) - norm(x)))
+__kernel void slerp(__global float* x, __global const float* o, __global const float* lr, int w) {
+  __local float red[256];
+  const int t = get_local_id(0);
+  const size_t r = get_group_id(0) * (size_t)w;
+  float sa = 0, sb = 0;
+  for (int j = t; j < w; j += 256) { sa += x[r + j] * x[r + j]; sb += o[r + j] * o[r + j]; }
+  const float fa = 1.f / sqrt(wg_sum(sa, red) + 1e-6f), fb = 1.f / sqrt(wg_sum(sb, red) + 1e-6f);
+  float s = 0;
+  for (int j = t; j < w; j += 256) {
+    float ya = x[r + j] * fa, yb = o[r + j] * fb, v = ya + lr[j] * (yb - ya);
+    x[r + j] = v;
+    s += v * v;
+  }
+  const float f = 1.f / sqrt(wg_sum(s, red) + 1e-6f);
+  for (int j = t; j < w; j += 256) x[r + j] *= f;
+}
+
+// gate block of gu (rows of w) = justnorm(silu(g * sg) * (u * su)), u at u_off
+__kernel void swiglu_norm(__global float* gu, int u_off, __global const float* sg, __global const float* su, int w) {
+  __local float red[256];
+  const int t = get_local_id(0);
+  const size_t r = get_group_id(0) * (size_t)w;
+  float s = 0;
+  for (int j = t; j < w; j += 256) {
+    float z = gu[r + j] * sg[j], v = z / (1.f + exp(-z)) * (gu[u_off + r + j] * su[j]);
+    gu[r + j] = v;
+    s += v * v;
+  }
+  const float f = 1.f / sqrt(wg_sum(s, red) + 1e-6f);
+  for (int j = t; j < w; j += 256) gu[r + j] *= f;
+}
+
+// att = justnorm(att * sigmoid(g * gs)), g at g_off of proj
+__kernel void gate_norm(__global float* att, __global const float* proj, int g_off, __global const float* gs, int w) {
+  __local float red[256];
+  const int t = get_local_id(0);
+  const size_t r = get_group_id(0) * (size_t)w;
+  float s = 0;
+  for (int j = t; j < w; j += 256) {
+    float v = att[r + j] * (1.f / (1.f + exp(-proj[g_off + r + j] * gs[j])));
+    att[r + j] = v;
+    s += v * v;
+  }
+  const float f = 1.f / sqrt(wg_sum(s, red) + 1e-6f);
+  for (int j = t; j < w; j += 256) att[r + j] *= f;
+}
+
+// NeoX RoPE (cos / sin table of the chunk: [m][d/2] each), then justnorm per head, then times scale (q)
+__kernel void rope_norm(__global float* x, int x_off, __global const float* cs, int m, int heads, int d,
+                        __global const float* scale, int use_scale) {
+  __local float red[128];
+  const int g = get_group_id(0), r = g / heads, h = g % heads, i = get_local_id(0), hh = d / 2;
+  __global float* v = x + x_off + ((size_t)r * heads + h) * d;
+  const float c = cs[(size_t)r * hh + i], s = cs[(size_t)(m + r) * hh + i];
+  float x1 = v[i], x2 = v[i + hh];
+  float o1 = x1 * c - x2 * s, o2 = x2 * c + x1 * s;
+  const float f = 1.f / sqrt(wg_sum(o1 * o1 + o2 * o2, red) + 1e-6f);
+  o1 *= f;
+  o2 *= f;
+  if (use_scale) {
+    o1 *= scale[h * d + i];
+    o2 *= scale[h * d + i + hh];
+  }
+  v[i] = o1;
+  v[i + hh] = o2;
+}
+
+float e4m3(uchar b) {
+  uint e = (b >> 3) & 15, m = b & 7;
+  float v = e ? as_float(((e + 120) << 23) | (m << 20)) : (float)m * 0.001953125f;
+  return (b & 128) ? -v : v;
+}
+// FP32 -> E4M3, the CPU KvCache's rounding (nearest even, saturating to 448)
+uchar e4m3_bits(float x) {
+  uint bits = as_uint(x), sign = (bits >> 24) & 0x80, a = bits & 0x7fffffff;
+  if (a > 0x7f800000) return (uchar)(sign | 0x7f);
+  if (a < 0x3c800000) {
+    float t = as_float(a) * 512.f, lo = floor(t), frac = t - lo;
+    uint steps = (uint)lo;
+    steps += (frac > 0.5f) || (frac == 0.5f && (steps & 1));
+    return (uchar)(sign | steps);
+  }
+  uint r = a + 0x7ffff + ((a >> 20) & 1);
+  return (uchar)(sign | min(((((r >> 23) - 120) << 3) | ((r >> 20) & 7)), 0x7eu));
+}
+
+// this call's K / V rows (k at k_off, v at v_off of proj) into the cache, one work-group of d per (row, KV head)
+__kernel void kv_store(__global const float* proj, int k_off, int v_off, __global uchar* ck, __global uchar* cv,
+                       __global float* cks, __global float* cvs, long pos0, int n, int kv_heads, int d, long slots, int ring) {
+  __local float red[256];
+  const int g = get_group_id(0), r = g / kv_heads, h = g % kv_heads, j = get_local_id(0);
+  const size_t src = ((size_t)r * kv_heads + h) * d + j;
+  const float kx = proj[k_off + src], vx = proj[v_off + src];
+  const float ak = wg_max(fabs(kx), red), av = wg_max(fabs(vx), red);
+  if (ring && r < n - slots) return;   // a ring keeps the last `slots` positions of a long chunk
+  const long p = pos0 + r, slot = ring ? p % slots : p;
+  const size_t idx = (size_t)slot * kv_heads + h;
+  const float sk = ak > 0.f ? ak / 448.f : 1.f, sv = av > 0.f ? av / 448.f : 1.f;
+  ck[idx * d + j] = e4m3_bits(kx * (1.f / sk));
+  cv[idx * d + j] = e4m3_bits(vx * (1.f / sv));
+  if (j == 0) {
+    cks[idx] = sk;
+    cvs[idx] = sv;
+  }
+}
+
+// softmax(q k / sqrt(d)) v for one (row, head) per work-group of 256 (= d): keys before pos0 from the FP8 cache,
+// this call's keys from proj (FP32), causal and windowed; tiles of 256 keys with an online softmax
+__kernel void attend(__global const float* proj, int k_off, int v_off, __global const uchar* ck, __global const uchar* cv,
+                     __global const float* cks, __global const float* cvs, __global float* out, int heads, int kv_heads,
+                     int d, long pos0, int window, long slots, int ring, float sm) {
+  __local float q[256], p[256], red[256];
+  const int g = get_group_id(0), r = g / heads, h = g % heads, kvh = h / (heads / kv_heads), t = get_local_id(0);
+  const long pos = pos0 + r, lo = window > 0 ? max(0L, pos - window + 1) : 0L;
+  q[t] = proj[((size_t)r * heads + h) * d + t];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  float m = -INFINITY, l = 0.f, acc = 0.f;
+  for (long k0 = lo; k0 <= pos; k0 += 256) {
+    const long key = k0 + t;
+    float s = -INFINITY;
+    if (key <= pos) {
+      float dot = 0.f;
+      if (key < pos0) {
+        const size_t idx = (size_t)(ring ? key % slots : key) * kv_heads + kvh;
+        __global const uchar* kr = ck + idx * d;
+        for (int j = 0; j < d; j++) dot += q[j] * e4m3(kr[j]);
+        dot *= cks[idx];
+      } else {
+        __global const float* kr = proj + k_off + ((size_t)(key - pos0) * kv_heads + kvh) * d;
+        for (int j = 0; j < d; j++) dot += q[j] * kr[j];
+      }
+      s = dot * sm;
+    }
+    const float mx = wg_max(s, red), m_new = fmax(m, mx), corr = m == -INFINITY ? 0.f : exp(m - m_new);
+    const float e = key <= pos ? exp(s - m_new) : 0.f;
+    p[t] = e;
+    l = l * corr + wg_sum(e, red);
+    acc *= corr;
+    const int nk = (int)min(256L, pos - k0 + 1);
+    for (int j = 0; j < nk; j++) {
+      const long kk = k0 + j;
+      float v;
+      if (kk < pos0) {
+        const size_t idx = (size_t)(ring ? kk % slots : kk) * kv_heads + kvh;
+        v = e4m3(cv[idx * d + t]) * cvs[idx];
+      } else {
+        v = proj[v_off + ((size_t)(kk - pos0) * kv_heads + kvh) * d + t];
+      }
+      acc += p[j] * v;
+    }
+    m = m_new;
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  out[((size_t)r * heads + h) * d + t] = acc / l;
+}
+)CLC";
+
+GpuDorySession::GpuDorySession(DoryModel& m) : M_(m), G_(*m.gpu) {
+  const Config& c = m.c;
+  XTG_CHECK(m.o.kv_dtype == KvDtype::FP8, "backend=gpu keeps an FP8 KV cache (kv_dtype=fp8)");
+  XTG_CHECK(c.head_dim == 256 && c.hidden % 256 == 0, "backend=gpu: kernels written for head_dim 256");
+  const size_t ch = size_t(m.o.chunk), H = size_t(c.hidden), Q = size_t(c.heads) * size_t(c.head_dim),
+               KV = size_t(c.kv_heads) * size_t(c.head_dim), F = size_t(c.ffn), half = size_t(c.head_dim) / 2;
+  for (const Layer& L : m.layers) {
+    Vecs v;
+    v.lr = upload(L.lr);
+    if (L.kind == kMlp) {
+      v.sg = upload(L.sg);
+      v.su = upload(L.su);
+    } else {
+      v.qscale = upload(L.qscale);
+      v.gscale = upload(L.gscale);
+      int inst = L.recurrent && m.o.per_loop ? m.o.loops : 1;
+      caches_.emplace_back();
+      for (int i = 0; i < inst; ++i) {
+        Cache k;
+        k.ring = L.kind == kSliding;
+        k.slots = k.ring ? c.window : m.o.context;
+        k.k = G_.alloc(size_t(k.slots) * KV);
+        k.v = G_.alloc(size_t(k.slots) * KV);
+        k.ks = G_.alloc(size_t(k.slots) * size_t(c.kv_heads) * 4);
+        k.vs = G_.alloc(size_t(k.slots) * size_t(c.kv_heads) * 4);
+        caches_.back().push_back(k);
+      }
+    }
+    vecs_.push_back(v);
+  }
+  snaps_.resize(size_t(m.o.snapshots));
+  x_ = G_.alloc(ch * H * 4);
+  input_ = G_.alloc(ch * H * 4);
+  state_ = G_.alloc(ch * H * 4);
+  proj_ = G_.alloc(ch * (2 * Q + 2 * KV) * 4);
+  att_ = G_.alloc(ch * Q * 4);
+  gu_ = G_.alloc(ch * 2 * F * 4);
+  o_ = G_.alloc(ch * H * 4);
+  for (int kind : {int(kSliding), int(kFull)}) rope_[kind] = G_.alloc(ch * 2 * half * 4);
+  hx_ = G_.alloc(16 * H * 4);
+  logits_dev_ = G_.alloc(16 * size_t(c.vocab) * 4);
+}
+
+GpuDorySession::~GpuDorySession() {
+  G_.finish();
+  auto drop = [&](Cache& k) {
+    for (Mem b : {k.k, k.v, k.ks, k.vs}) G_.release(b);
+  };
+  for (auto& layer : caches_)
+    for (auto& k : layer) drop(k);
+  for (auto& s : snaps_)
+    for (auto& k : s.rings) drop(k);
+  for (auto& v : vecs_)
+    for (Mem b : {v.lr, v.qscale, v.gscale, v.sg, v.su}) G_.release(b);
+  for (Mem b : {x_, input_, state_, proj_, att_, gu_, o_, rope_[kSliding], rope_[kFull], hx_, logits_dev_}) G_.release(b);
+}
+
+OpenClBackend::Mem GpuDorySession::upload(const std::vector<float>& v) {
+  Mem b = G_.alloc(v.size() * 4);
+  G_.write(b, 0, v.data(), v.size() * 4);
+  return b;
+}
+
+void GpuDorySession::sublayer(size_t li, int m, int64_t pos0, int inst, bool store) {
+  check_cancelled();
+  const Config& c = M_.c;
+  const Layer& L = M_.layers[li];
+  const Vecs& V = vecs_[li];
+  const int H = c.hidden, F = c.ffn, Q = c.heads * c.head_dim, KV = c.kv_heads * c.head_dim, d = c.head_dim;
+  auto slerp = G_.kernel(kDoryCl, "", "slerp");
+  if (L.kind == kMlp) {
+    G_.matmul({&L.gate, &L.up}, x_, m, gu_, 0);
+    G_.launch(G_.kernel(kDoryCl, "", "swiglu_norm"), {size_t(m) * 256, 1}, {256, 1}, gu_, m * F, V.sg, V.su, F);
+    G_.matmul({&L.down}, gu_, m, o_, 0);
+    G_.launch(slerp, {size_t(m) * 256, 1}, {256, 1}, x_, o_, V.lr, H);
+    return;
+  }
+  const int k_off = m * Q, v_off = m * (Q + KV), g_off = m * (Q + 2 * KV);
+  G_.matmul({&L.q, &L.k, &L.v, &L.g}, x_, m, proj_, 0);
+  auto rope = G_.kernel(kDoryCl, "", "rope_norm");
+  Mem none = nullptr;
+  G_.launch(rope, {size_t(m) * c.heads * (d / 2), 1}, {size_t(d / 2), 1}, proj_, 0, rope_[L.kind], m, c.heads, d, V.qscale, 1);
+  G_.launch(rope, {size_t(m) * c.kv_heads * (d / 2), 1}, {size_t(d / 2), 1}, proj_, k_off, rope_[L.kind], m, c.kv_heads, d,
+            none, 0);
+  const Cache& K = caches_[size_t(L.attn)][size_t(inst)];
+  const int64_t p0 = pos0, slots = K.slots;   // OpenCL long
+  const int ring = K.ring ? 1 : 0, window = L.window;
+  const float sm = 1.f / std::sqrt(float(d));
+  G_.launch(G_.kernel(kDoryCl, "", "attend"), {size_t(m) * c.heads * 256, 1}, {256, 1}, proj_, k_off, v_off, K.k, K.v, K.ks,
+            K.vs, att_, c.heads, c.kv_heads, d, p0, window, slots, ring, sm);
+  if (store)
+    G_.launch(G_.kernel(kDoryCl, "", "kv_store"), {size_t(m) * c.kv_heads * size_t(d), 1}, {size_t(d), 1}, proj_, k_off,
+              v_off, K.k, K.v, K.ks, K.vs, p0, m, c.kv_heads, d, slots, ring);
+  G_.launch(G_.kernel(kDoryCl, "", "gate_norm"), {size_t(m) * 256, 1}, {256, 1}, att_, proj_, g_off, V.gscale, Q);
+  G_.matmul({&L.o}, att_, m, o_, 0);
+  G_.launch(slerp, {size_t(m) * 256, 1}, {256, 1}, x_, o_, V.lr, H);
+}
+
+void GpuDorySession::run_chunk(const int32_t* tokens, int m, int64_t pos0) {
+  const Config& c = M_.c;
+  const int H = c.hidden, half = c.head_dim / 2;
+  host_.resize(size_t(m) * size_t(H));
+  for (int r = 0; r < m; ++r) {
+    XTG_CHECK(tokens[r] >= 0 && tokens[r] < c.vocab, "token %d out of range", tokens[r]);
+    bf16_row(M_.embed, tokens[r], H, host_.data() + size_t(r) * size_t(H));
+  }
+  G_.write(x_, 0, host_.data(), host_.size() * 4);
+  // the RoPE tables of this chunk, as the CPU computes them (float positions times 1 / theta^(2i/d))
+  for (int kind : {int(kSliding), int(kFull)}) {
+    std::vector<float> cs(size_t(2) * size_t(m) * size_t(half));
+    for (int i = 0; i < half; ++i) {
+      float inv = 1.f / std::pow(c.theta[kind], float(2 * i) / float(c.head_dim));
+      for (int r = 0; r < m; ++r) {
+        float a = float(pos0 + r) * inv;
+        cs[size_t(r) * size_t(half) + size_t(i)] = std::cos(a);
+        cs[size_t(m + r) * size_t(half) + size_t(i)] = std::sin(a);
+      }
+    }
+    G_.write(rope_[kind], 0, cs.data(), cs.size() * 4);
+  }
+  const size_t bytes = size_t(m) * size_t(H) * 4;
+  size_t l = 0;
+  for (; l < size_t(c.n_in); ++l) sublayer(l, m, pos0, 0, true);
+  G_.copy(x_, 0, input_, 0, bytes);
+  G_.copy(x_, 0, state_, 0, bytes);
+  for (int i = 0; i < M_.o.loops; ++i) {
+    G_.launch(G_.kernel(kDoryCl, "", "add_norm"), {size_t(m) * 256, 1}, {256, 1}, state_, input_, x_, H, 1);
+    bool store = M_.o.per_loop || i == M_.o.loops - 1;
+    for (size_t r = size_t(c.n_in); r < size_t(c.n_in + c.n_rec); ++r) sublayer(r, m, pos0, M_.o.per_loop ? i : 0, store);
+    G_.launch(G_.kernel(kDoryCl, "", "add_norm"), {size_t(m) * 256, 1}, {256, 1}, x_, x_, state_, H, 0);
+  }
+  G_.copy(state_, 0, x_, 0, bytes);
+  for (l = size_t(c.n_in + c.n_rec); l < size_t(c.layers); ++l) sublayer(l, m, pos0, 0, true);
+}
+
+void GpuDorySession::forward(const int32_t* tokens, int n, Logits want, const LogitsFn& on_logits) {
+  const Config& c = M_.c;
+  XTG_CHECK(n_ + n <= M_.o.context, "context full: %lld + %d > %lld tokens", (long long)n_, n, (long long)M_.o.context);
+  drop_snapshots_above(n_);
+  const int rows_per_head = 16;
+  const size_t H = size_t(c.hidden);
+  for (int off = 0; off < n; off += M_.o.chunk) {
+    check_cancelled();
+    int m = std::min(M_.o.chunk, n - off);
+    run_chunk(tokens + off, m, n_);
+    n_ += m;
+    int r0 = want == Logits::All ? 0 : (want == Logits::Last && off + m == n ? m - 1 : m);
+    for (int r = r0; r < m; r += rows_per_head) {
+      int rows = std::min(rows_per_head, m - r);
+      G_.copy(x_, size_t(r) * H * 4, hx_, 0, size_t(rows) * H * 4);
+      G_.matmul(M_.lm_head, hx_, rows, logits_dev_);
+      logits_.resize(size_t(rows) * size_t(c.vocab));
+      G_.read(logits_dev_, 0, logits_.data(), logits_.size() * 4);
+      for (int i = 0; i < rows; ++i) {
+        float* lg = logits_.data() + size_t(i) * size_t(c.vocab);
+        for (int j = 0; j < c.vocab; ++j) lg[j] *= M_.logit_scale[size_t(j)];
+        on_logits(off + r + i, lg);
+      }
+    }
+  }
+  G_.finish();
+}
+
+void GpuDorySession::drop_snapshots_above(int64_t pos) {
+  for (Snap& s : snaps_)
+    if (s.pos > pos) s.pos = -1;
+}
+
+bool GpuDorySession::rewind(int64_t n) {
+  if (n == n_) return true;
+  if (n > n_ || n < 0) return false;
+  bool rings = M_.c.window > 0 && std::count(M_.c.kind.begin(), M_.c.kind.end(), int(kSliding)) > 0;
+  if (rings && n_ > M_.c.window && n < n_ - 1) return false;
+  n_ = n;
+  drop_snapshots_above(n);
+  return true;
+}
+
+void GpuDorySession::snapshot(int slot) {
+  if (slot < 0 || slot >= int(snaps_.size())) return;
+  Snap& s = snaps_[size_t(slot)];
+  size_t i = 0;
+  for (auto& layer : caches_)
+    for (auto& k : layer) {
+      if (!k.ring) continue;
+      const size_t rows = size_t(k.slots) * size_t(M_.c.kv_heads);
+      if (i == s.rings.size()) {   // first use of this slot: device buffers like the ring's
+        Cache c = k;
+        c.k = G_.alloc(rows * size_t(M_.c.head_dim));
+        c.v = G_.alloc(rows * size_t(M_.c.head_dim));
+        c.ks = G_.alloc(rows * 4);
+        c.vs = G_.alloc(rows * 4);
+        s.rings.push_back(c);
+      }
+      const Cache& d = s.rings[i++];
+      G_.copy(k.k, 0, d.k, 0, rows * size_t(M_.c.head_dim));
+      G_.copy(k.v, 0, d.v, 0, rows * size_t(M_.c.head_dim));
+      G_.copy(k.ks, 0, d.ks, 0, rows * 4);
+      G_.copy(k.vs, 0, d.vs, 0, rows * 4);
+    }
+  s.pos = n_;
+}
+
+bool GpuDorySession::restore(int slot) {
+  if (slot < 0 || slot >= int(snaps_.size()) || snaps_[size_t(slot)].pos < 0) return false;
+  Snap& s = snaps_[size_t(slot)];
+  size_t i = 0;
+  for (auto& layer : caches_)
+    for (auto& k : layer) {
+      if (!k.ring) continue;
+      const Cache& d = s.rings[i++];
+      const size_t rows = size_t(k.slots) * size_t(M_.c.kv_heads);
+      G_.copy(d.k, 0, k.k, 0, rows * size_t(M_.c.head_dim));
+      G_.copy(d.v, 0, k.v, 0, rows * size_t(M_.c.head_dim));
+      G_.copy(d.ks, 0, k.ks, 0, rows * 4);
+      G_.copy(d.vs, 0, k.vs, 0, rows * 4);
+    }
+  n_ = s.pos;
+  drop_snapshots_above(n_);
+  return true;
+}
+
+void GpuDorySession::reset() {
+  n_ = 0;
+  for (Snap& s : snaps_) s.pos = -1;
+}
+
+size_t GpuDorySession::cache_bytes(const Cache& c) const {
+  return 2 * size_t(c.slots) * size_t(M_.c.kv_heads) * (size_t(M_.c.head_dim) + 4);
+}
+
+size_t GpuDorySession::kv_bytes() const {
+  size_t b = 0;
+  for (const auto& layer : caches_)
+    for (const auto& k : layer) b += cache_bytes(k);
+  for (const Snap& s : snaps_)
+    for (const auto& k : s.rings) b += cache_bytes(k);
   return b;
 }
 

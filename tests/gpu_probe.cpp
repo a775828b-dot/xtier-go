@@ -102,6 +102,56 @@ __kernel void gemv4m(__global const uchar* c, __global const uchar* s, __global 
   }
 }
 
+// Prefill GEMM prototype: C[M][N] = A[M][K] . W[N][K]^T with NVFP4 W decoded once per tile into local memory.
+// 256 work-items, each 4 rows of A x 8 columns of W (a 64 x 128 tile), K in steps of 32 with a T-precision
+// partial per step added into FP32 (T = half where the device has cl_khr_fp16, else float for checking).
+#ifdef cl_khr_fp16
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+typedef half T; typedef half4 T4; typedef half8 T8;
+#define CVT8 convert_half8
+#else
+typedef float T; typedef float4 T4; typedef float8 T8;
+#define CVT8 convert_float8
+#endif
+__kernel void gemm_t(__global const T* A, __global const uchar* c, __global const uchar* s, __global float* C,
+                     int M, int N, int K, float scale) {
+  __local T As[64][32 + 2];
+  __local T Bs[32][128];
+  const int tid = get_local_id(0), tm = tid / 16, tn = tid % 16;
+  const int m0 = get_group_id(1) * 64, n0 = get_group_id(0) * 128;
+  float8 acc0 = 0, acc1 = 0, acc2 = 0, acc3 = 0;
+  for (int k0 = 0; k0 < K; k0 += 32) {
+    {  // A: 64 x 32, eight values per work-item
+      int r = tid / 4, kk = (tid % 4) * 8;
+      vstore8(m0 + r < M ? vload8(0, A + (size_t)(m0 + r) * K + k0 + kk) : (T8)0, 0, &As[r][kk]);
+    }
+    {  // W: 128 rows x 32 k, sixteen weights (one NVFP4 block) per work-item, decoded into k-major Bs
+      int r = tid / 2, half16 = (tid % 2) * 16, n = n0 + r;
+      if (n < N) {
+        uint2 q = vload2(0, (__global const uint*)(c + (size_t)n * (K / 2) + (k0 + half16) / 2));
+        float sc = e4m3(s[(size_t)n * (K / 16) + (k0 + half16) / 16]);
+        float4 w0 = e2m1x4(q.x) * sc, w1 = e2m1x4(q.x >> 16) * sc, w2 = e2m1x4(q.y) * sc, w3 = e2m1x4(q.y >> 16) * sc;
+        float wv[16] = {w0.x, w0.y, w0.z, w0.w, w1.x, w1.y, w1.z, w1.w, w2.x, w2.y, w2.z, w2.w, w3.x, w3.y, w3.z, w3.w};
+        for (int i = 0; i < 16; i++) Bs[half16 + i][r] = (T)wv[i];
+      } else for (int i = 0; i < 16; i++) Bs[half16 + i][r] = 0;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    T8 p0 = 0, p1 = 0, p2 = 0, p3 = 0;
+    for (int k = 0; k < 32; k++) {
+      T8 b = vload8(0, &Bs[k][tn * 8]);
+      p0 = mad((T8)As[tm * 4 + 0][k], b, p0); p1 = mad((T8)As[tm * 4 + 1][k], b, p1);
+      p2 = mad((T8)As[tm * 4 + 2][k], b, p2); p3 = mad((T8)As[tm * 4 + 3][k], b, p3);
+    }
+    acc0 += convert_float8(p0); acc1 += convert_float8(p1); acc2 += convert_float8(p2); acc3 += convert_float8(p3);
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  float8 acc[4] = {acc0, acc1, acc2, acc3};
+  for (int i = 0; i < 4; i++) {
+    int m = m0 + tm * 4 + i, n = n0 + tn * 8;
+    if (m < M && n + 7 < N) vstore8(acc[i] * scale, 0, C + (size_t)m * N + n);
+  }
+}
+
 __kernel void peak_fp32(__global float* out, float a, float b) {
   float4 x0 = (float4)(get_global_id(0)), x1 = x0 + 1, x2 = x0 + 2, x3 = x0 + 3;
   for (int i = 0; i < 1024; i++) { x0 = mad(x0, a, b); x1 = mad(x1, a, b); x2 = mad(x2, a, b); x3 = mad(x3, a, b); }
@@ -321,6 +371,104 @@ void gemv(Cl& c) {
   p_clReleaseMemObject(sb);
 }
 
+uint16_t to_half(float f) {   // round to nearest even, no NaN handling (the data is finite and small)
+  uint32_t x;
+  std::memcpy(&x, &f, 4);
+  uint32_t sign = (x >> 16) & 0x8000;
+  int e = int((x >> 23) & 255) - 127 + 15;
+  uint32_t m = x & 0x7fffff;
+  if (e >= 31) return uint16_t(sign | 0x7c00);
+  if (e <= 0) {   // subnormal
+    if (e < -10) return uint16_t(sign);
+    m |= 0x800000;
+    uint32_t shift = uint32_t(14 - e), h = m >> shift, rest = m & ((1u << shift) - 1), halfway = 1u << (shift - 1);
+    if (rest > halfway || (rest == halfway && (h & 1))) h++;
+    return uint16_t(sign | h);
+  }
+  uint32_t h = (uint32_t(e) << 10) | (m >> 13), rest = m & 0x1fff;
+  if (rest > 0x1000 || (rest == 0x1000 && (h & 1))) h++;
+  return uint16_t(sign | h);
+}
+float from_half(uint16_t h) {
+  uint32_t sign = uint32_t(h & 0x8000) << 16, e = (h >> 10) & 31, m = h & 1023, x;
+  if (e == 0) {
+    float v = std::ldexp(float(m), -24);
+    return sign ? -v : v;
+  }
+  x = sign | ((e - 15 + 127) << 23) | (m << 13);
+  float f;
+  std::memcpy(&f, &x, 4);
+  return f;
+}
+
+// the prefill GEMM prototype: NVFP4 7168 x 2560 against M activation rows, FP16 where the device has it
+void gemm(Cl& c) {
+  const bool f16 = c.has("cl_khr_fp16");
+  const int N = 7168, K = 2560;
+  std::mt19937 rng(11);
+  std::vector<uint8_t> codes(size_t(N) * K / 2), scales(size_t(N) * K / 16);
+  for (auto& v : codes) v = uint8_t(rng());
+  for (auto& v : scales) v = uint8_t(0x30 + rng() % 16);
+  const float global = 0.01f;
+  cl_mem cb = c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, codes.size(), codes.data());
+  cl_mem sb = c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, scales.size(), scales.data());
+  cl_kernel k = c.kernel(f16 ? "" : "", "gemm_t");
+  for (int M : {512, 1024}) {
+    std::normal_distribution<float> nd(0.f, 0.02f);
+    std::vector<float> a(size_t(M) * K);
+    std::vector<uint16_t> ah(f16 ? a.size() : 0);
+    for (size_t i = 0; i < a.size(); i++) {
+      a[i] = nd(rng);
+      if (f16) {
+        ah[i] = to_half(a[i]);
+        a[i] = from_half(ah[i]);   // the reference uses what the GPU sees
+      }
+    }
+    cl_mem ab = f16 ? c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, ah.size() * 2, ah.data())
+                    : c.buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, a.size() * 4, a.data());
+    std::vector<float> out(size_t(M) * N);
+    cl_mem ob = c.buffer(CL_MEM_WRITE_ONLY, out.size() * 4);
+    c.arg(k, 0, ab); c.arg(k, 1, cb); c.arg(k, 2, sb); c.arg(k, 3, ob);
+    c.arg(k, 4, M); c.arg(k, 5, N); c.arg(k, 6, K); c.arg(k, 7, global);
+    size_t gsz[2] = {size_t(N / 128) * 256, size_t((M + 63) / 64)}, lsz[2] = {256, 1};
+    std::vector<double> ts;
+    for (int i = 0; i < 6; i++) {
+      cl_event ev;
+      CK(p_clEnqueueNDRangeKernel(c.q, k, 2, nullptr, gsz, lsz, 0, nullptr, &ev));
+      CK(p_clWaitForEvents(1, &ev));
+      cl_ulong t0 = 0, t1 = 0;
+      p_clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(t0), &t0, nullptr);
+      p_clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(t1), &t1, nullptr);
+      p_clReleaseEvent(ev);
+      if (i) ts.push_back(double(t1 - t0) * 1e-9);
+    }
+    double t = median(ts);
+    CK(p_clEnqueueReadBuffer(c.q, ob, CL_TRUE, 0, out.size() * 4, out.data(), 0, nullptr, nullptr));
+    double err = 0, ref2 = 0;
+    int checked = 0;
+    for (int m : {0, M / 2 + 3, M - 1})
+      for (int n = 0; n < N; n += 523) {
+        double r = 0;
+        for (int kk = 0; kk < K; kk++) {
+          uint8_t b = codes[size_t(n) * K / 2 + kk / 2];
+          int code = (kk & 1) ? b >> 4 : b & 15;
+          r += double(xtg::kE2m1[code]) * xtg::e4m3_to_f32(scales[size_t(n) * K / 16 + kk / 16]) * a[size_t(m) * K + kk];
+        }
+        r *= global;
+        err = std::max(err, std::fabs(r - out[size_t(m) * N + n]));
+        ref2 += r * r;
+        checked++;
+      }
+    double rms = std::sqrt(ref2 / checked), tol = f16 ? 5e-3 : 1e-4;
+    std::printf("gemm_%s M=%d N=%d K=%d %.2f ms, %.0f GFLOP/s, err/rms %.1e%s\n", f16 ? "fp16" : "fp32", M, N, K, t * 1e3,
+                2.0 * M * N * K / t / 1e9, err / rms, err / rms < tol ? "" : "  MISMATCH");
+    p_clReleaseMemObject(ab);
+    p_clReleaseMemObject(ob);
+  }
+  p_clReleaseMemObject(cb);
+  p_clReleaseMemObject(sb);
+}
+
 void peaks(Cl& c) {
   const size_t global = size_t(c.num<cl_uint>(CL_DEVICE_MAX_COMPUTE_UNITS)) * 2048 * 4, local = 128;
   cl_mem out = c.buffer(CL_MEM_READ_WRITE, global * 4);
@@ -369,6 +517,7 @@ int main(int argc, char** argv) {
   if (only.empty() || only == "launch") launch(c);
   if (only.empty() || only == "read") bandwidth(c);
   if (only.empty() || only == "gemv") gemv(c);
+  if (only.empty() || only == "gemm") gemm(c);
   if (only.empty() || only == "peak") peaks(c);
   std::printf("done\n");
   return 0;

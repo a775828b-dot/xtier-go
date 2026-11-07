@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <map>
 #include <unordered_map>
 
 #include "xtg/common.h"
@@ -38,7 +39,7 @@ __kernel void gemv4(__global const uchar*c0,__global const uchar*s0,
                    __global const uchar*c1,__global const uchar*s1,
                    __global const uchar*c2,__global const uchar*s2,
                    __global const uchar*c3,__global const uchar*s3,
-                   __global const float*x,__global float*y,int K,int4 counts,float4 scales){
+                   __global const float*x,__global float*y,int K,int4 counts,float4 scales,int off){
     int lid=get_local_id(0),lane=lid&31,outrow=get_group_id(0)*4+lid/32;
     int row=outrow,N=counts.x+counts.y+counts.z+counts.w;
     __global const uchar*c=c0;__global const uchar*s=s0;float scale=scales.x;
@@ -58,12 +59,12 @@ __kernel void gemv4(__global const uchar*c0,__global const uchar*s0,
 #ifdef cl_khr_subgroup_shuffle_relative
     if(get_sub_group_size()>=32){
         for(int step=16;step;step/=2)sum+=sub_group_shuffle_xor(sum,step);
-        if(lane==0&&outrow<N)y[outrow]=sum*scale;return;
+        if(lane==0&&outrow<N)y[off+outrow]=sum*scale;return;
     }
 #endif
     __local float sums[128];sums[lid]=sum;barrier(CLK_LOCAL_MEM_FENCE);
     for(int step=16;step;step/=2){if(lane<step)sums[lid]+=sums[lid+step];barrier(CLK_LOCAL_MEM_FENCE);}
-    if(lane==0&&outrow<N)y[outrow]=sums[lid]*scale;
+    if(lane==0&&outrow<N)y[off+outrow]=sums[lid]*scale;
 }
 __kernel void gemv16(__global const ushort*w,__global const float*x,__global float*y,int K,int N,int offset){
     int lid=get_local_id(0),lane=lid&31,row=get_group_id(0)*4+lid/32;float4 acc=0;
@@ -136,10 +137,13 @@ struct OpenClBackend::Impl {
   X(clGetDeviceInfo) X(clCreateContext) X(clCreateCommandQueue) X(clCreateProgramWithSource) X(clBuildProgram) \
       X(clGetProgramBuildInfo) X(clCreateKernel) X(clCreateBuffer) X(clSetKernelArg) X(clEnqueueNDRangeKernel) \
           X(clEnqueueWriteBuffer) X(clEnqueueReadBuffer) X(clFinish) X(clReleaseMemObject) X(clReleaseKernel)  \
-              X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext)
+              X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext) X(clEnqueueCopyBuffer)
 #define DECL(n) decltype(&::n) n = nullptr;
   API(DECL)
 #undef DECL
+  // the device-resident path's programs (by source and options) and kernels (by program and name)
+  std::map<std::pair<const char*, std::string>, cl_program> programs;
+  std::map<std::pair<cl_program, std::string>, cl_kernel> kernels;
   void* lib = nullptr;
   cl_device_id device = nullptr;
   cl_context context = nullptr;
@@ -169,6 +173,8 @@ struct OpenClBackend::Impl {
     if (output) clReleaseMemObject(output);
     for (auto k : {gemv4, gemm4, gemv16, gemm16})
       if (k) clReleaseKernel(k);
+    for (auto& [key, k] : kernels) clReleaseKernel(k);
+    for (auto& [key, p] : programs) clReleaseProgram(p);
     if (program) clReleaseProgram(program);
     if (queue) clReleaseCommandQueue(queue);
     if (context) clReleaseContext(context);
@@ -311,6 +317,7 @@ void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, const floa
       p.arg(p.gemv4, 10, K);
       p.arg(p.gemv4, 11, counts);
       p.arg(p.gemv4, 12, scales);
+      p.arg(p.gemv4, 13, 0);
       p.dispatch(p.gemv4, 1, int(count));
       for (size_t j = 0; j < ws.size(); ++j) {
         check(p.clEnqueueReadBuffer(p.queue, p.output, CL_FALSE, size_t(offset) * 4, size_t(ws[j]->n_out) * 4, ys[j], 0,
@@ -379,5 +386,126 @@ void OpenClBackend::matmul(const Bf16Weight& w, const float* x, int m, float* y)
     p.clFinish(p.queue);
     throw;
   }
+}
+
+// --- device-resident path ---
+
+OpenClBackend::Mem OpenClBackend::alloc(size_t bytes) {
+  cl_int e;
+  cl_mem b = impl_->clCreateBuffer(impl_->context, CL_MEM_READ_WRITE, std::max<size_t>(bytes, 4), nullptr, &e);
+  check(e, "device buffer");
+  return b;
+}
+void OpenClBackend::release(Mem m) {
+  if (m) impl_->clReleaseMemObject(m);
+}
+void OpenClBackend::write(Mem m, size_t offset, const void* src, size_t bytes) {
+  if (bytes) check(impl_->clEnqueueWriteBuffer(impl_->queue, m, CL_TRUE, offset, bytes, src, 0, nullptr, nullptr), "write");
+}
+void OpenClBackend::read(Mem m, size_t offset, void* dst, size_t bytes) {
+  if (bytes) check(impl_->clEnqueueReadBuffer(impl_->queue, m, CL_TRUE, offset, bytes, dst, 0, nullptr, nullptr), "read");
+}
+void OpenClBackend::copy(Mem src, size_t src_offset, Mem dst, size_t dst_offset, size_t bytes) {
+  if (bytes)
+    check(impl_->clEnqueueCopyBuffer(impl_->queue, src, dst, src_offset, dst_offset, bytes, 0, nullptr, nullptr), "copy");
+}
+void OpenClBackend::finish() { check(impl_->clFinish(impl_->queue), "finish"); }
+
+OpenClBackend::Kernel OpenClBackend::kernel(const char* source, const std::string& options, const char* name) {
+  auto& p = *impl_;
+  cl_program& prog = p.programs[{source, options}];
+  if (!prog) {
+    cl_int e;
+    prog = p.clCreateProgramWithSource(p.context, 1, &source, nullptr, &e);
+    check(e, "program");
+    std::string opts = "-cl-std=CL1.2 " + options;
+    if (p.clBuildProgram(prog, 1, &p.device, opts.c_str(), nullptr, nullptr) != CL_SUCCESS) {
+      std::string text(65536, '\0');
+      p.clGetProgramBuildInfo(prog, p.device, CL_PROGRAM_BUILD_LOG, text.size() - 1, text.data(), nullptr);
+      cl_program bad = prog;
+      p.programs.erase({source, options});
+      p.clReleaseProgram(bad);
+      fail("OpenCL build of %s: %s", name, text.c_str());
+    }
+  }
+  cl_kernel& k = p.kernels[{prog, name}];
+  if (!k) {
+    cl_int e;
+    k = p.clCreateKernel(prog, name, &e);
+    check(e, name);
+  }
+  return k;
+}
+void OpenClBackend::set_arg(Kernel k, unsigned index, size_t size, const void* value) {
+  check(impl_->clSetKernelArg(k, index, size, value), "kernel argument");
+}
+void OpenClBackend::enqueue(Kernel k, Range global, Range local) {
+  size_t g[2] = {global[0], global[1]}, l[2] = {local[0], local[1]};
+  for (int i = 0; i < 2; ++i) g[i] = (g[i] + l[i] - 1) / l[i] * l[i];
+  check(impl_->clEnqueueNDRangeKernel(impl_->queue, k, 2, nullptr, g, l, 0, nullptr, nullptr), "dispatch");
+}
+
+void OpenClBackend::matmul(const std::vector<const Nvfp4Weight*>& ws, Mem x, int m, Mem y, size_t y_offset) {
+  XTG_CHECK(!ws.empty() && m > 0, "Invalid GPU matmul arguments");
+  auto& p = *impl_;
+  const int K = ws[0]->k;
+  for (auto w : ws) {
+    XTG_CHECK(w->k == K, "GPU input widths differ");
+    prepare(*w);
+  }
+  if (m == 1) {
+    XTG_CHECK(ws.size() <= 4, "GPU decode supports at most four fused projections");
+    cl_int4 counts{};
+    cl_float4 scales{};
+    int total = 0;
+    for (int j = 0; j < 4; ++j) {
+      const auto& w = *ws[j < int(ws.size()) ? j : 0];
+      auto b = p.weights.at(w.codes);
+      p.arg(p.gemv4, j * 2, b.codes);
+      p.arg(p.gemv4, j * 2 + 1, b.scales);
+      if (j < int(ws.size())) {
+        counts.s[j] = w.n_out;
+        scales.s[j] = w.global;
+        total += w.n_out;
+      }
+    }
+    p.arg(p.gemv4, 8, x);
+    p.arg(p.gemv4, 9, y);
+    p.arg(p.gemv4, 10, K);
+    p.arg(p.gemv4, 11, counts);
+    p.arg(p.gemv4, 12, scales);
+    p.arg(p.gemv4, 13, int(y_offset));
+    p.dispatch(p.gemv4, 1, total);
+    return;
+  }
+  size_t offset = y_offset;
+  for (auto w : ws) {
+    auto b = p.weights.at(w->codes);
+    p.arg(p.gemm4, 0, b.codes);
+    p.arg(p.gemm4, 1, b.scales);
+    p.arg(p.gemm4, 2, x);
+    p.arg(p.gemm4, 3, y);
+    p.arg(p.gemm4, 4, K);
+    p.arg(p.gemm4, 5, w->n_out);
+    p.arg(p.gemm4, 6, m);
+    p.arg(p.gemm4, 7, w->global);
+    p.arg(p.gemm4, 8, int(offset));
+    p.dispatch(p.gemm4, m, w->n_out);
+    offset += size_t(m) * size_t(w->n_out);
+  }
+}
+void OpenClBackend::matmul(const Bf16Weight& w, Mem x, int m, Mem y) {
+  prepare(w);
+  auto& p = *impl_;
+  cl_kernel k = m == 1 ? p.gemv16 : p.gemm16;
+  p.arg(k, 0, p.weights.at(w.data).codes);
+  p.arg(k, 1, x);
+  p.arg(k, 2, y);
+  p.arg(k, 3, w.k);
+  p.arg(k, 4, w.n_out);
+  int i = 5;
+  if (m != 1) p.arg(k, i++, m);
+  p.arg(k, i, 0);
+  p.dispatch(k, m, w.n_out);
 }
 }  // namespace xtg
