@@ -22,7 +22,7 @@ CPU 冷提示 prefill 6.66–7.19 tok/s、decode 3.68–4.38 tok/s（两组短�
 DSH 真客户端、10/30 分钟稳定性、长上下文与 GPU 不在此次通过范围。详见[记录](reports/2026-11-07-y900-bringup.md)。
 
 2026-11-07 晚：整步驻留 GPU 跑通（prefill 31.9、decode 6.0 tok/s，输出与 CPU 一致），提示查找投机解码（`spec_k`）上线但
-GPU 小 M 内核没复用权重、只快 19%；NPU 摸底：折叠后的 W8A16 段线性层折算 286 tok/s。速度目标 prefill 300 / decode 40
+GPU 小 M 内核没复用权重、只快 19%；NPU 摸底：折叠后的 W8A16 段线性层折算 286 tok/s。速度目标（11-08 按实测调整为 prefill 250–300 / 120–180、decode 20–25 / 15–20，分别是 4K–8K 和 32K 深度）
 （DSH 32K）的分步计划见 [speed-plan.md](speed-plan.md)，数据见[摸底报告](reports/2026-11-07-y900-npu-gpu-probe.md)。
 
 | 阶段 | 内容 | 状态 |

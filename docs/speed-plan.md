@@ -1,4 +1,4 @@
-# 速度方案：DSH 32K 下 prefill 300 / decode 40
+# 速度方案：DSH 32K 下的 prefill / decode
 
 [回到文档目录](README.md)
 
@@ -10,7 +10,10 @@
 - **任务**：DSH agent 任务，会话上下文涨到 32K。新内容（工具结果、读进来的文件）在它所在的深度 prefill，decode 在当前深度。
   DSH 先不接：现在用简单 agent 任务代替（`tools/agent_bench.py`：4 个会话，在本仓库源码上做小改动，起点 3K–28K）。
   下面按深度 4K / 16K / 32K 分开算，另给一个 0 → 32K 会话的平均。
-- **目标**：prefill 300 tok/s、decode 40 tok/s；上下文保 128K（per_loop KV，投机解码因此是精确的）。
+- **目标**（11-08 按实测调整）：prefill 在 4K–8K 深度 250–300 tok/s、32K 深度 120–180；decode 在 4K 20–25 tok/s、32K 15–20。
+  上下文保 128K（per_loop KV，投机解码因此是精确的）。原定 prefill 300 / decode 40：decode 卡在内存带宽上（2 循环每 token
+  读 3.2 GiB，单 token 极限 4K 约 18、32K 约 15），agent 任务上提示查找草稿每次前向只出 1.9 个；32K 深度的 prefill 卡在
+  GPU 注意力上（q·k 要 FP32）。再往上要训草稿头（S2）或改模型的跑法，暂不做。
 - **精度**：int8 权重 / int8 激活（W8A16、W4A8）可以用，A/B 通过才能当默认：PPL、照抄、对 vLLM 的逐 token logprob、
   DSH 任务结果（[validation.md](validation.md)）。
 
@@ -26,9 +29,9 @@ Dory 4B 跑 2 次循环，每个 token 有 56 次注意力和 56 段线性层（
 | 注意力计算 | 1.6 GFLOP | 4.5 | 8.2 |
 | decode 读的字节（权重 + KV） | 3.2 + 0.2 GiB | 3.2 + 0.5 | 3.2 + 1.0 |
 
-- **decode 40 只能靠投机解码。** 带宽按 60 GB/s 算（实测 66），单 token 的上限 4K 约 17 tok/s、32K 约 14。验证几个 token
+- **decode 过 20 只能靠投机解码。** 带宽按 60 GB/s 算（实测 66），单 token 的上限 4K 约 17 tok/s、32K 约 14。验证几个 token
   读的权重和 KV 跟 decode 一步一样多，每步接受 a 个就快约 a 倍，前提是验证步的内核真的只读一次。
-- **prefill 300 要 NPU 和 GPU 同时干活。** 每 token 只有 3.3 ms：线性层要 3.1 TFLOP/s，32K 深度的注意力还要再加
+- **prefill 到 300 要 NPU 和 GPU 同时干活。** 每 token 只有 3.3 ms：线性层要 3.1 TFLOP/s，32K 深度的注意力还要再加
   2.5 TFLOP/s，哪个单元都扛不下两样。q·k 必须 FP32 累加（[dory.md](dory.md#精度注意注意力很尖)），所以 GPU 做注意力
   的上限是 FP32 峰值 2.81 TFLOP/s。
 
@@ -129,7 +132,7 @@ GPU 本身（`tests/gpu_probe`）：读 66 GB/s；峰值 FP32 2.81、FP16 5.61 T
 |---|---|---|---|
 | N0 | App 进程里跑 NPU：APK 带 libQnnHtp 和 V79 stub，skel 放原生库目录并设 ADSP_LIBRARY_PATH；tiny_m16 和 seg_m768_w8a16 各跑一次，输出和 adb 下一致 | **11-07 夜通过**：走路线 N（NPU 线性层 + GPU 注意力） | 走路线 G：G6 提前，GPU int8 点积做线性层；prefill 目标降为会话平均约 150 |
 | S1 | 先不接 DSH，用简单 agent 任务（`tools/agent_bench.py` 的 4 个会话）统计提示查找草稿每次前向能出几个 token（默认温度、贪心、关思考各一组，思考单独统计） | 4K ≥ 2.6、32K ≥ 3.2：decode 40 可达 | **11-07 夜：1.9（k = 8）/ 2.0（k = 16）**，没达到。decode 按 25–30 算，要 40 得做 S2 |
-| S2 | （研究）模型做草稿：EAGLE 式的小草稿头，用 Dory 自己的隐状态训练；词表要缩小，否则每个草稿 token 都要读一遍 0.3–0.6 GiB 的 lm_head | 默认温度、开思考时每次前向 ≥ 2.6 个 | — |
+| S2 | （研究，11-08 定暂不做）模型做草稿：EAGLE 式的小草稿头，用 Dory 自己的隐状态训练；词表要缩小，否则每个草稿 token 都要读一遍 0.3–0.6 GiB 的 lm_head | 默认温度、开思考时每次前向 ≥ 2.6 个 | — |
 
 ### decode（GPU）
 
@@ -196,7 +199,8 @@ prefill（NPU 线性层 2.8 ms/token，GPU 注意力 1.5 TFLOP/s，流水效率 
   不通过就退回 GPU（路线 G，prefill 会话平均约 150）。
 - **W8A16 的 A/B 不过**：只能退回 NPU FP16，线性层约 115 tok/s，或者做混合精度（敏感的矩阵乘用 FP16）。
 - **注意力内核的效率**：上表按 FP32 / FP16 峰值的一半估算，Adreno 上没有现成的同类内核可以对照。
-- **投机解码的接受数**：S1 已测，提示查找只到 1.9–2.0。decode 40 取决于 S2 的草稿头能不能训出来；训不出来就按 25–30 算。
+- **投机解码的接受数**：S1 已测，提示查找只到 1.9–2.0，目标因此定在 decode 20–25（4K）/ 15–20（32K）。验证步在 Adreno 上
+  如果算不到单步的 1.2 倍以内（FP32 算力有限），还要往下打折。
 - **持续负载**：只测了 4 分钟、NPU 半负荷；32K 的提示要连续 prefill 两分钟左右，满负荷时会不会降频没测过。
 - **128K 内存**：NPU 4 bit 方案（LPBQ）还没跑通过。
 
