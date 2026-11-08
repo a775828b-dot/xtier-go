@@ -502,9 +502,11 @@ int xtg_npu_info(xtg_npu* h, char* out, int out_len) {
   int len = snprintf(out, size_t(out_len),
                      "{\"vocab\":%d,\"context\":%d,\"max_position\":%d,\"prefill_ar\":%d,\"decode_ar\":%d,"
                      "\"kv_instances\":%d,\"ring_instances\":%d,\"ring_slots\":%d,\"sliding_window\":%d,"
-                     "\"kv_bytes\":%zu,\"snapshots\":%zu,\"logits_scale\":%.9g,\"logits_zero_point\":%d}",
+                     "\"kv_bytes\":%zu,\"snapshots\":%zu,\"logits_scale\":%.9g,\"logits_zero_point\":%d,"
+                     "\"kvmap\":%s}",
                      h->vocab, h->ctx, h->ctx - 1, h->prefill.ar, h->decode.ar, h->n, rings, h->ring, h->window,
-                     h->cache_bytes, h->snaps.size(), double(h->scale), h->zero_point);
+                     h->cache_bytes, h->snaps.size(), double(h->scale), h->zero_point,
+                     h->vmap.empty() ? "false" : "true");
   return len < out_len ? len : -1;
 }
 

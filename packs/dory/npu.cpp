@@ -167,9 +167,10 @@ class NpuModel : public Model {
     info_.context = buckets_.back().context;
     info_.eos_ids = read_eos(dir, config);
     describe();
-    log("npu: %s loaded in %.1f s (context %lld of %lld, prefill chunk %d, %d KV instances)", buckets_[0].path.c_str(),
-        now_s() - t0, (long long)meta_.at("context").get<int64_t>(), (long long)info_.context, chunk_,
-        meta_.value("kv_instances", 0));
+    log("npu: %s loaded in %.1f s (context %lld of %lld, prefill chunk %d, %d KV instances, %s)",
+        buckets_[0].path.c_str(), now_s() - t0, (long long)meta_.at("context").get<int64_t>(),
+        (long long)info_.context, chunk_, meta_.value("kv_instances", 0),
+        meta_.value("kvmap", false) ? "KV byte maps" : "no KV byte maps: NAME.kvmap.json is missing, cached V may be off");
   }
   ~NpuModel() override {
     if (h_) api_->close(h_);
@@ -243,6 +244,7 @@ class NpuModel : public Model {
                           {"prefill_chunk", chunk_},
                           {"kv_instances", meta_.value("kv_instances", 0)},
                           {"kv_bytes", meta_.value("kv_bytes", 0)},
+                          {"kvmap", meta_.value("kvmap", false)},
                           {"threads", 1}};
   }
 };

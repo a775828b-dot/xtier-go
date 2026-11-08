@@ -22,7 +22,7 @@ typedef void (*xtg_npu_logits_fn)(int row, const float* logits, void* user);
 // NAME.kvmap.json next to NAME.pte, written by tools/npu_et/kv_enc_check.py). NULL on failure, the reason in err.
 xtg_npu* xtg_npu_open(const char* pte_path, const char* options, char* err, int err_len);
 // {"vocab", "context", "max_position", "prefill_ar", "decode_ar", "kv_instances", "ring_instances", "ring_slots",
-//  "sliding_window", "kv_bytes", "snapshots", "logits_scale", "logits_zero_point"} as JSON; the length or -1.
+//  "sliding_window", "kv_bytes", "snapshots", "logits_scale", "logits_zero_point", "kvmap"} as JSON; the length or -1.
 int xtg_npu_info(xtg_npu* h, char* out, int out_len);
 // Run n tokens at positions pos() .. pos() + n - 1. want: 0 no logits, 1 the last row, 2 every row. 0 on success.
 int xtg_npu_forward(xtg_npu* h, const int32_t* tokens, int n, int want, xtg_npu_logits_fn fn, void* user, char* err,
