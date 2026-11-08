@@ -95,9 +95,13 @@ struct Snap {
   std::vector<int64_t> ring_pos;
 };
 
-size_t io_bytes(const MethodMeta& mm) {
+// a method's own I/O in the shared memory: tokens, masks, position, logits, the new K / V rows. Its cache inputs
+// (4 .. 4 + 2n - 1) are the session's caches, allocated once: counting them per method made the buffer three times
+// the caches (2 GB at 32K), more than the DSP could map next to the weights, and QNN copied what it could not map
+size_t io_bytes(const MethodMeta& mm, int n_kv) {
   size_t b = 0;
-  for (size_t i = 0; i < mm.num_inputs(); ++i) b += mm.input_tensor_meta(i)->nbytes();
+  for (size_t i = 0; i < mm.num_inputs(); ++i)
+    if (i < 4 || i >= 4 + 2 * size_t(n_kv)) b += mm.input_tensor_meta(i)->nbytes();
   for (size_t i = 0; i < mm.num_outputs(); ++i) b += mm.output_tensor_meta(i)->nbytes();
   return b;
 }
@@ -167,7 +171,7 @@ struct xtg_npu {
       inst[size_t(l)].slots = slots;
       cache_bytes += 2 * size_t(heads) * size_t(hd) * size_t(slots);
     }
-    mem = std::make_unique<example::RpcMem>(cache_bytes, io_bytes(pm), io_bytes(dm));
+    mem = std::make_unique<example::RpcMem>(cache_bytes, io_bytes(pm, n), io_bytes(dm, n));
     for (Inst& c : inst) {
       const size_t b = size_t(heads) * size_t(hd) * size_t(c.slots);
       c.k = mem->allocate(b);
