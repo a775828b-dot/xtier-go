@@ -57,10 +57,13 @@ def check(path):
         for k, v in n.get('when', {}).items():
             if k not in opts or v not in opts[k]:
                 bad.append(f'note "{n.get("text", "")[:20]}": {k}={v} does not exist')
-    for f in m.get('files', []):   # a file needed only under some option values (one context bucket's .pte)
-        for k, v in f.get('when', {}).items():
-            if k not in opts or v not in opts[k]:
+    for f in m.get('files', []):   # a file needed only under some option values: the value, or an item of a comma
+        for k, v in f.get('when', {}).items():   # list (npu_model: the context buckets, each .pte needed by the lists
+            if k not in opts or not any(v in c.split(',') for c in opts[k]):   # that name it)
                 bad.append(f'file {f.get("name")}: when {k}={v} does not exist')
+        pte = f.get('name', '').replace('.kvmap.json', '.pte')
+        if pte.endswith('.pte') and f.get('when', {}).get('npu_model') != pte:   # a bucket's .pte and its KV byte maps
+            bad.append(f'file {f["name"]}: needs "when": {{"npu_model": "{pte}"}}')
     return c.get('id'), bad
 
 

@@ -5,9 +5,9 @@
 // the tokenizer and the chat template as for the other backends, plus the .pte files (option npu_model).
 //
 // A static graph's KV length is fixed, so a context comes in buckets, one .pte each: npu_model may list several
-// (smallest context first, "a-c32k.pte,a-c96k.pte"). The session starts in the first and moves to the next one that
-// fits when a request needs more room (xtg_npu_grow: the caches move over, nothing is computed again); the model
-// reports the last bucket's context.
+// (smallest context first, "a-c4096.pte,a-c32k.pte"). Each prefill chunk runs in the smallest bucket that holds it:
+// a step costs about its bucket's whole context, so a long prompt fills the small buckets first and moves up as it
+// grows (xtg_npu_grow: the caches move over, nothing is computed again); the model reports the last bucket's context.
 #include <dirent.h>
 #include <dlfcn.h>
 
@@ -255,16 +255,17 @@ void NpuSession::forward(const int32_t* tokens, int n, Logits want, const Logits
   const int64_t need = n_past() + n;
   XTG_CHECK(need <= M_.info_.context, "context full: %lld + %d > %lld tokens", (long long)n_past(), n,
             (long long)M_.info_.context);
-  if (M_.buckets_.size() > 1) M_.fit(need);
   struct Ctx {
     const LogitsFn* fn;
     int off;
   };
-  // the plugin runs a chunk of up to one prefill AR (short runs token by token); progress and cancellation per chunk
+  // the plugin runs a chunk of up to one prefill AR (short runs token by token); progress, cancellation and the
+  // bucket per chunk
   for (int off = 0; off < n; off += M_.chunk_) {
     check_cancelled();
     report_progress(off);
     int m = std::min(M_.chunk_, n - off);
+    if (M_.buckets_.size() > 1) M_.fit(n_past() + m);
     int w = want == Logits::All ? 2 : (want == Logits::Last && off + m == n ? 1 : 0);
     Ctx c{&on_logits, off};
     char err[1024] = {0};

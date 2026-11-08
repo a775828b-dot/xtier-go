@@ -27,7 +27,8 @@ data class Option(
 
 data class Note(val whenAll: Map<String, String>, val text: String, val warn: Boolean)
 
-// whenAll: needed only under these option values (one context bucket's .pte); local: no download source (adb push)
+// whenAll: needed only when every key's value is the given one or lists it (npu_model is a comma list of context
+// buckets: a bucket's .pte is needed by every list that names it); local: no download source (adb push)
 data class ModelFile(
     val name: String,
     val size: Long,
@@ -75,7 +76,7 @@ data class Card(
 
     /** The files these option values need. */
     fun filesFor(values: Map<String, String>): List<ModelFile> =
-        files.filter { f -> f.whenAll.all { (k, v) -> values[k] == v } }
+        files.filter { f -> f.whenAll.all { (k, v) -> values[k]?.split(',')?.contains(v) == true } }
 
     /** The pack options, the template kwargs and the launch settings for these values. */
     fun launchConfig(modelDir: String, values: Map<String, String>): JSONObject {
