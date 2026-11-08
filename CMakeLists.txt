@@ -34,8 +34,9 @@ add_library(xtg_engine STATIC
   engine/src/sampler.cpp
   engine/src/model.cpp
   packs/packs.cpp
-  packs/dory/dory.cpp)
-target_include_directories(xtg_engine PUBLIC engine/include third_party PRIVATE packs third_party/OpenCL)
+  packs/dory/dory.cpp
+  packs/dory/npu.cpp)
+target_include_directories(xtg_engine PUBLIC engine/include third_party PRIVATE packs npu third_party/OpenCL)
 target_link_libraries(xtg_engine PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 if(ANDROID)
   target_link_libraries(xtg_engine PUBLIC log)

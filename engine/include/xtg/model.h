@@ -32,6 +32,8 @@ class Session {
  public:
   virtual ~Session() = default;
   void set_cancel_check(std::function<bool()> check) { cancel_check_ = std::move(check); }
+  // Called by forward() before each chunk with the tokens of the call done so far (the server's live prefill rate).
+  void set_progress(std::function<void(int done)> progress) { progress_ = std::move(progress); }
   virtual int64_t n_past() const = 0;
   // Run n tokens at positions n_past() .. n_past() + n - 1 (any length; the pack cuts it into prefill chunks).
   virtual void forward(const int32_t* tokens, int n, Logits want, const LogitsFn& on_logits) = 0;
@@ -51,9 +53,13 @@ class Session {
   void check_cancelled() const {
     if (cancel_check_ && cancel_check_()) throw std::runtime_error("request cancelled");
   }
+  void report_progress(int done) const {
+    if (progress_) progress_(done);
+  }
 
  private:
   std::function<bool()> cancel_check_;
+  std::function<void(int)> progress_;
 };
 
 class Model {

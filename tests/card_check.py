@@ -2,8 +2,8 @@
 
     python tests/card_check.py
 
-Defaults are among the choices, unavailable / note / off_when keys and values exist, kwarg options map every
-choice, files have sizes, the model directory has no path separators. Exit 1 on any problem.
+Defaults are among the choices, unavailable / note / off_when / file "when" keys and values exist, kwarg options
+map every choice, files have sizes, the model directory has no path separators. Exit 1 on any problem.
 """
 import glob
 import json
@@ -57,6 +57,10 @@ def check(path):
         for k, v in n.get('when', {}).items():
             if k not in opts or v not in opts[k]:
                 bad.append(f'note "{n.get("text", "")[:20]}": {k}={v} does not exist')
+    for f in m.get('files', []):   # a file needed only under some option values (one context bucket's .pte)
+        for k, v in f.get('when', {}).items():
+            if k not in opts or v not in opts[k]:
+                bad.append(f'file {f.get("name")}: when {k}={v} does not exist')
     return c.get('id'), bad
 
 

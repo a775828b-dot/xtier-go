@@ -59,16 +59,16 @@ CI 的 `android-app` 任务每次推送都编一份 debug APK（artifact `xtier-
 模型文件放 `Android/data/io.github.a775828b.xtiergo/files/models/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4/`：启动台里可以从
 hf-mirror / huggingface 直连下载（域名经 223.5.5.5 解析、不走代理，8 连接分段、断点续传、下完校验 sha256），也可以 `adb push` 进去。
 
-### 带 QNN 的开发版（NPU 自检）
+### 带 QNN 的开发版（NPU 后端）
 
-`-PxtgQnnLibs=DIR` 把 `DIR/arm64-v8a/` 一起打进 APK，并在安装时解出原生库，这样 App 才能执行其中两个程序。目录里放 QNN SDK
-（QAIRT 2.47）的这些文件：
+`-PxtgQnnLibs=DIR` 把 `DIR/arm64-v8a/` 一起打进 APK，并在安装时解出原生库。**NPU 后端**（`backend=npu`）要这些：
 
-- `lib/aarch64-android/` 下的 `libQnnHtp.so`、`libQnnHtpV79Stub.so`、`libQnnSystem.so`、`libQnnHtpProfilingReader.so`；
-- `lib/hexagon-v79/unsigned/` 下的 `libQnnHtpV79Skel.so`、`libQnnHtpV79.so`；
-- `bin/aarch64-android/` 下的 `qnn-net-run`、`qnn-profile-viewer`，分别改名成 `libqnn_net_run.so`、`libqnn_profile_viewer.so`。
+- QAIRT **2.37** 的 `lib/aarch64-android/` 下的 `libQnnHtp.so`、`libQnnHtpV79Stub.so`、`libQnnSystem.so`，
+  `lib/hexagon-v79/unsigned/` 下的 `libQnnHtpV79Skel.so`（2.47 下切片的模型会让 DSP 崩，见 [npu.md](npu.md)）；
+- 按 [npu.md](npu.md) 编出来的 `libqnn_executorch_backend.so`（ExecuTorch v1.5.1）和 `libxtg_npu.so`。
 
-SDK 不在仓库里，这个选项只用于本地构建。
+NPU 自检（`tools/npu_probe`）另外要 QAIRT 的 `qnn-net-run`、`qnn-profile-viewer`，改名成 `libqnn_net_run.so`、
+`libqnn_profile_viewer.so` 放进同一目录；没有它们时 DEV 面板的「NPU 自检」是灰的。SDK 不在仓库里，这个选项只用于本地构建。
 
 ```bash
 gradle assembleDebug -PxtgAppIdSuffix=.dev -PxtgQnnLibs=/path/to/qnn-jnilibs

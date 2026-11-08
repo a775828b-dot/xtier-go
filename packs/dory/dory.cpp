@@ -14,6 +14,24 @@
 #include "xtg/safetensors.h"
 
 namespace xtg::dory {
+
+std::vector<int> read_eos(const std::string& dir, const json& config) {
+  std::vector<int> ids;
+  auto add = [&](const json& v) {
+    if (v.is_number_integer())
+      ids.push_back(v.get<int>());
+    else if (v.is_array())
+      for (const auto& x : v) ids.push_back(x.get<int>());
+  };
+  std::ifstream g(dir + "/generation_config.json");
+  if (g.good()) {
+    json gc = json::parse(g);
+    if (gc.contains("eos_token_id")) add(gc["eos_token_id"]);
+  }
+  if (ids.empty() && config.contains("eos_token_id")) add(config["eos_token_id"]);
+  return ids;
+}
+
 namespace {
 
 
@@ -195,22 +213,6 @@ size_t weights_file_bytes(const std::string& dir) {
   return size_t(f.tellg());
 }
 
-std::vector<int> read_eos(const std::string& dir, const json& config) {
-  std::vector<int> ids;
-  auto add = [&](const json& v) {
-    if (v.is_number_integer())
-      ids.push_back(v.get<int>());
-    else if (v.is_array())
-      for (const auto& x : v) ids.push_back(x.get<int>());
-  };
-  std::ifstream g(dir + "/generation_config.json");
-  if (g.good()) {
-    json gc = json::parse(g);
-    if (gc.contains("eos_token_id")) add(gc["eos_token_id"]);
-  }
-  if (ids.empty() && config.contains("eos_token_id")) add(config["eos_token_id"]);
-  return ids;
-}
 
 struct Layer {
   int kind = kMlp;
@@ -556,6 +558,7 @@ void DorySession::forward(const int32_t* tokens, int n, Logits want, const Logit
   const int rows_per_head = 16;
   for (int off = 0; off < n; off += M_.o.chunk) {
     check_cancelled();
+    report_progress(off);
     int m = std::min(M_.o.chunk, n - off);
     run_chunk(tokens + off, m, n_);
     n_ += m;
@@ -1189,6 +1192,7 @@ void GpuDorySession::forward(const int32_t* tokens, int n, Logits want, const Lo
   const size_t H = size_t(c.hidden);
   for (int off = 0; off < n; off += M_.o.chunk) {
     check_cancelled();
+    report_progress(off);
     int m = std::min(M_.o.chunk, n - off);
     run_chunk(tokens + off, m, n_);
     n_ += m;
@@ -1290,15 +1294,19 @@ size_t GpuDorySession::kv_bytes() const {
 
 json option_schema() {
   return json{{"loops", "1..4"},          {"kv_mode", {"per_loop", "last_loop"}}, {"kv_dtype", {"bf16", "fp8"}},
-              {"context", "256..max_position_embeddings"}, {"prefill_chunk", "16..8192"}, {"snapshots", "0..8"}};
+              {"context", "256..max_position_embeddings"}, {"prefill_chunk", "16..8192"}, {"snapshots", "0..8"},
+              {"backend", {"cpu", "gpu", "gpu-linear", "npu"}}, {"npu_model", "a .pte in the checkpoint directory"},
+              {"npu_plugin", "the plugin library (libxtg_npu.so)"}};
 }
 
 void register_pack() {
   ModelPack p;
   p.load = [](const std::string& dir, const json& config, const json& options, ThreadPool& pool) {
+    if (get_str(options, "backend", "cpu") == "npu") return load_npu(dir, config, options);
     return std::unique_ptr<Model>(new DoryModel(dir, config, options, pool));
   };
   p.estimate = [](const std::string& dir, const json& config, const json& options) {
+    if (get_str(options, "backend", "cpu") == "npu") return estimate_npu(dir, config, options);
     Config c = parse_config(config, dir);
     return estimate(c, parse_options(c, options), weights_file_bytes(dir));
   };

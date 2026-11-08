@@ -11,12 +11,24 @@
 // predictions).
 #pragma once
 
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "xtg/json.h"
+#include "xtg/model.h"
 
 namespace xtg::dory {
 
 
 void register_pack();
+
+// The end-of-sequence ids: generation_config.json, else config.json.
+std::vector<int> read_eos(const std::string& dir, const json& config);
+
+// backend=npu (npu.cpp): the .pte of the QNN export through libxtg_npu, and its memory estimate.
+std::unique_ptr<Model> load_npu(const std::string& dir, const json& config, const json& options);
+json estimate_npu(const std::string& dir, const json& config, const json& options);
 
 // The options this pack takes (keys of a launch request; the card's choices are a subset):
 //   loops          1..4 (default: the checkpoint's n_recurrent_loops)
@@ -25,6 +37,9 @@ void register_pack();
 //   context        KV capacity in tokens (<= max_position_embeddings)
 //   prefill_chunk  tokens per forward chunk (last_loop results depend on it, as in vLLM)
 //   snapshots      sliding-window snapshots kept for the prefix cache
+//   backend        "cpu" (default) | "gpu" | "gpu-linear" | "npu"
+//   npu_model      backend=npu: the .pte (default: the only one in the checkpoint directory)
+//   npu_plugin     backend=npu: the plugin library (default libxtg_npu.so, found like any shared library)
 json option_schema();
 
 }  // namespace xtg::dory

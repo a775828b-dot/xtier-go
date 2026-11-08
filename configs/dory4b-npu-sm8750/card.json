@@ -1,0 +1,52 @@
+{
+  "id": "dory4b-npu",
+  "order": 1,
+  "name": "Nemotron-Labs Dory 1.0 4B",
+  "code": "DORY-4B-NPU",
+  "port": 18400,
+  "served": "dory",
+  "spec": "",
+  "arch": "16 输入子层 · 40 循环子层 × 2（展开，各一份权重）· 16 输出子层 · 滑窗 1024（环形 1088 槽）+ 全局注意力 · nGPT · NPU 静态图切 4 片：16 位激活 · 4 位权重块 · 8 位 KV · prefill 64 行 / decode 8 行",
+  "hardware": "Snapdragon 8 Elite (SM8750) · Hexagon V79 NPU",
+  "ready_timeout": 300,
+  "model": {
+    "repo": "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
+    "revision": "f6c832e6963ddb74f62c75813a3e8c74b1af67b1",
+    "dir": "Dory1.0-4B-NPU-SM8750",
+    "mirrors": ["https://hf-mirror.com", "https://huggingface.co"],
+    "files": [
+      {"name": "config.json", "size": 2267},
+      {"name": "generation_config.json", "size": 225},
+      {"name": "chat_template.jinja", "size": 10152},
+      {"name": "tokenizer_config.json", "size": 177209},
+      {"name": "special_tokens_map.json", "size": 563},
+      {"name": "tokenizer.json", "size": 17077484, "sha256": "623c34567aebb18582765289fbe23d901c62704d6518d71866e0e58db892b5b7"},
+      {"name": "dory-4b-l1-npu-c4096.pte", "size": 2925818112, "local": true, "when": {"npu_model": "dory-4b-l1-npu-c4096.pte"}},
+      {"name": "dory-4b-npu-c4096.pte", "size": 3987327488, "local": true, "when": {"npu_model": "dory-4b-npu-c4096.pte"}}
+    ]
+  },
+  "bench": {"kind": "text", "dec": "14.2", "pre": "449–478",
+            "title": "Y900 NPU 实测（npu_test）：1 次循环、4K 档，1K / 3K 提示的 prefill，decode 是单 token（不含投机解码）"},
+  "options": [
+    {"key": "backend", "target": "option", "label": "计算后端", "default": "npu",
+     "choices": [["npu", "NPU · Hexagon V79（ExecuTorch QNN）"]],
+     "hint": "整步在 NPU 上：权重 4 位分块、激活 16 位、KV 8 位，从 BF16 版量化；CPU 只做分词、采样和投机解码的草稿"},
+    {"key": "npu_model", "target": "option", "label": "档位", "default": "dory-4b-l1-npu-c4096.pte",
+     "choices": [["dory-4b-l1-npu-c4096.pte", "4K · 1 次循环（快）"], ["dory-4b-npu-c4096.pte", "4K · 2 次循环（准）"]],
+     "hint": "每个档位一个 .pte（静态图的 KV 长度固定）。1 次循环每 token 少读约 1/3 的权重，decode 快约 50%，代价是能力下降（官方 SWE-bench 59.5 → 50.3）"},
+    {"key": "spec_k", "target": "launch", "label": "投机解码（提示查找）", "default": "7",
+     "choices": [["0", "关"], ["3", "3 个草稿"], ["7", "7 个草稿"]],
+     "hint": "decode 图一次 8 行：一步验证 8 个 token 只比算 1 个多 6–15%，agent 任务上提示查找平均每步接受约 1.9 个"},
+    {"key": "effort", "target": "kwarg", "kwarg": "medium_effort", "label": "思考力度", "default": "default",
+     "choices": [["default", "默认"], ["efficient", "efficient · 少想一些"]],
+     "map": {"default": false, "efficient": true},
+     "hint": "efficient：模板在最后一条用户消息后加 {reasoning effort: efficient}；手机上少生成思考 token 最直接"},
+    {"key": "history_thinking", "target": "kwarg", "kwarg": "truncate_history_thinking", "label": "历史思考", "default": "truncate",
+     "choices": [["truncate", "截断 · 官方模板默认"], ["keep", "保留 · 前缀缓存不断"]],
+     "map": {"truncate": true, "keep": false},
+     "hint": "截断时用户每发一条新消息，之前各轮的思考被删掉，前缀缓存从那里断开、要重算"}
+  ],
+  "notes": [
+    {"when": {"backend": "npu"}, "text": ".pte 没有下载源：在服务器上导出（docs/npu.md）后 adb push 到上面的模型目录", "warn": true}
+  ]
+}

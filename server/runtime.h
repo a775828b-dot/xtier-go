@@ -143,6 +143,13 @@ class Runtime {
   int64_t requests_ = 0, prompt_tokens_ = 0, gen_tokens_ = 0, cached_tokens_ = 0;
   int64_t spec_steps_ = 0, spec_drafted_ = 0, spec_accepted_ = 0;   // verify steps, draft tokens, accepted ones
   json last_ = json::object();
+  // the request being served (phase 0 idle, 1 prefill, 2 decode) for the live rates, and the last finished ones
+  struct Live {
+    int phase = 0;
+    int64_t prompt = 0, cached = 0, done = 0, generated = 0;
+    double t0 = 0, t1 = 0;   // prefill and decode start
+  } live_;
+  std::deque<json> history_;
 };
 
 }  // namespace xtg

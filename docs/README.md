@@ -4,6 +4,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [npu.md](npu.md) | **NPU 路线（现在的主路线）**：ExecuTorch QNN 静态图、循环展开与切片、插件管 KV（环形滑窗）、8 行验证图、上下文档位、导出与上机 |
 | [architecture.md](architecture.md) | 架构：为什么手机上不跑 SGLang / vLLM，各层职责，从 XTier 继承的做法，设备后端路线 |
 | [dory.md](dory.md) | Dory 模型包：结构与前向公式、KV 模式、内存表、decode 带宽上限、注意力很尖带来的精度问题、分词器与模板 |
 | [speed-plan.md](speed-plan.md) | **速度方案**：DSH 32K 下 prefill / decode 的目标（11-08 按实测调整）、物理账、真机实测摘要、NPU + GPU 的分步计划与门槛、预计 |

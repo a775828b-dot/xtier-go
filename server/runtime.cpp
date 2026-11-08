@@ -140,7 +140,10 @@ void Runtime::load() {
   try {
     if (stopping_.load()) return;
     set_phase("files", "检查文件", 5);
+    // the weights too, unless the pack runs an exported graph (backend=npu: the .pte it looks up itself)
+    const bool graph = cfg_.options.is_object() && cfg_.options.value("backend", std::string()) == "npu";
     for (const char* f : {"/config.json", "/tokenizer.json", "/model.safetensors"}) {
+      if (graph && std::string(f) == "/model.safetensors") continue;
       std::ifstream probe(cfg_.model_dir + f);
       XTG_CHECK(probe.good(), "%s%s is missing", cfg_.model_dir.c_str(), f);
     }
@@ -277,6 +280,11 @@ void Runtime::engine_loop() {
       run(*job);
     } catch (const std::exception& e) {
       // the session may be half-written: start the next request from zero
+      session_->set_progress(nullptr);
+      {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        live_.phase = 0;
+      }
       session_->reset();
       cached_.clear();
       Event ev;
@@ -338,6 +346,14 @@ void Runtime::run(Job& job) {
   }
   double t0 = now_s();
   const int64_t todo = m - reuse;
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    live_ = Live{1, m, reuse, 0, 0, t0, 0};
+  }
+  session_->set_progress([this](int done) {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    live_.done = done;
+  });
   std::vector<std::pair<float, int>> top;
   session_->forward(r.prompt.data() + reuse, int(todo), r.logprobs ? Logits::All : Logits::Last,
                     [&](int row, const float* lg) {
@@ -355,12 +371,19 @@ void Runtime::run(Job& job) {
                       }
                       if (p + 1 == m) next = sampler.sample(lg, vocab, r.sampling);
                     });
+  session_->set_progress(nullptr);
   cached_ = r.prompt;
   if (session_->snapshot_slots() > 0 && !r.logprobs) {
     session_->snapshot(snap_next_);
     snap_next_ = (snap_next_ + 1) % session_->snapshot_slots();
   }
   double t1 = now_s();
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    live_.phase = 2;
+    live_.done = todo;
+    live_.t1 = t1;
+  }
   // --- decode ---
   const auto& eos = info().eos_ids;
   OutputParser parser(r.thinking, r.parse ? r.tools : json::array(), markers_);
@@ -381,6 +404,10 @@ void Runtime::run(Job& job) {
       break;
     }
     out_ids.push_back(tok);
+    {
+      std::lock_guard<std::mutex> lock(stats_mutex_);
+      live_.generated = int64_t(out_ids.size());
+    }
     Event ev;
     if (r.parse) {
       bool marker = tok == markers_.think_open || tok == markers_.think_close || tok == markers_.tool_open ||
@@ -477,6 +504,16 @@ void Runtime::run(Job& job) {
                  {"prefill_s", t1 - t0},      {"decode_s", t2 - t1},             {"prefill_tok_s", last_prefill_tok_s_},
                  {"decode_tok_s", last_decode_tok_s_}, {"finish", finish},
                  {"spec", {{"steps", steps}, {"drafted", drafted}, {"accepted", accepted}}}};
+    // this request's own rates (last_*_tok_s_ keep the previous value when a phase had nothing to time)
+    json h = last_;
+    h["prefill_tok_s"] = todo > 0 && t1 > t0 ? double(todo) / (t1 - t0) : 0.0;
+    h["decode_tok_s"] = out_ids.size() > 1 && t2 > t1 ? double(out_ids.size() - 1) / (t2 - t1) : 0.0;
+    h["n"] = requests_;
+    h["end"] = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch()).count()) / 1e3;
+    history_.push_back(std::move(h));
+    while (history_.size() > 32) history_.pop_front();
+    live_.phase = 0;
   }
   log("request: prompt %lld (cached %lld), %zu generated, prefill %.1f tok/s, decode %.1f tok/s, %s", (long long)m,
       (long long)reuse, out_ids.size(), todo > 0 ? double(todo) / std::max(1e-9, t1 - t0) : 0.0,
@@ -524,6 +561,25 @@ json Runtime::status() const {
     // speculative decoding so far: tokens per verify step = 1 + accepted / steps
     t["spec"] = json{{"k", cfg_.spec_k}, {"steps", spec_steps_}, {"drafted", spec_drafted_}, {"accepted", spec_accepted_},
                      {"tokens_per_step", spec_steps_ > 0 ? 1.0 + double(spec_accepted_) / double(spec_steps_) : 0.0}};
+    // the request in flight: rates so far in its phase
+    if (live_.phase > 0) {
+      double now = now_s();
+      double pre_s = (live_.phase == 1 ? now : live_.t1) - live_.t0;
+      double dec_s = live_.phase == 2 ? now - live_.t1 : 0.0;
+      t["current"] = json{{"phase", live_.phase == 1 ? "prefill" : "decode"},
+                          {"prompt_tokens", live_.prompt},
+                          {"cached_tokens", live_.cached},
+                          {"prefill_done", live_.done},
+                          {"prefill_s", pre_s},
+                          {"prefill_tok_s", pre_s > 0 ? double(live_.done) / pre_s : 0.0},
+                          {"generated", live_.generated},
+                          {"decode_s", dec_s},
+                          {"decode_tok_s", dec_s > 0 && live_.generated > 1 ? double(live_.generated - 1) / dec_s : 0.0}};
+    } else {
+      t["current"] = nullptr;
+    }
+    t["history"] = json::array();
+    for (const json& h : history_) t["history"].push_back(h);
   }
   t["running"] = running_.load();
   {

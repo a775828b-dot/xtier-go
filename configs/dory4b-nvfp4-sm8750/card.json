@@ -51,7 +51,7 @@
     {"key": "backend", "target": "option", "label": "计算后端", "default": "cpu",
      "choices": [["cpu", "CPU · NEON"], ["gpu", "GPU · Adreno（实验：整步在 GPU）"], ["gpu-linear", "GPU 线性层 + CPU（对照）"], ["npu", "NPU · Hexagon"]],
      "hint": "GPU 整步：Y900 上 prefill 约 4 倍、decode 约 1.4 倍，输出与 CPU 一致；持续负载和长上下文没验收，默认仍是 CPU",
-     "unavailable": {"npu": "还没接进引擎：摸底和计划见 docs/speed-plan.md"}},
+     "unavailable": {"npu": "NPU 用 DORY-4B-NPU 卡片：权重是导出的静态图（.pte），不是这里的 NVFP4"}},
     {"key": "spec_k", "target": "launch", "label": "投机解码（提示查找）", "default": "0",
      "choices": [["0", "关"], ["8", "8 个草稿"], ["16", "16 个草稿"]],
      "hint": "从提示和已生成内容里找重复片段当草稿，一步验证多个 token；温度任意都无损（per_loop 严格一致）。Adreno 上小 M 内核还没复用权重，照抄任务每步接受 8 个也只快约 20%"}
