@@ -32,8 +32,14 @@
   槽里实际是哪个位置重建（uint16，65535 = 可见）。回退只动位置；环的 64 个余量保证回退 64 个以内窗口还完整。
 - **两张图共用权重**：prefill 每次 64 行；decode 每次 8 行（ExecuTorch 的 lookahead 模式，`--ngram 2 --window 8 --gcap 0`
   把 decode 图定成 8 行）。投机解码一次验证最多 8 个 token，耗时和算 1 个差不多（decode 受带宽限制）。
-- **上下文档位**：静态图的 KV 长度是固定的，每个档位一个 `.pte`，启动台按档位选；全局注意力的缓存和计算按档位长度走，
-  所以短会话用小档位更快。
+- **上下文档位**：静态图的 KV 长度是固定的，每个档位一个 `.pte`；全局注意力每步都按档位长度算（被掩的槽也要读），所以
+  短会话用小档位更快。`npu_model` 可以列几个档位（从小到大，`…-c4096.pte,…-c32k.pte`）：会话从第一个开始，请求放不下时
+  插件把 KV 原样搬到放得下的最小档位（`xtg_npu_grow`：全局缓存按位置拷前 n_past 个槽，滑窗环、位置、快照一起搬，不重算），
+  对话变短时再搬回小档位；平板上搬 1056 个位置 1.5 秒，搬完继续生成的 token 和不搬时相同。同一套档位必须用同一份校准导出。
+- **注意力的两种写法**（`XTG_DORY_ATTN`）：`cat`（缓存和新行拼起来、K / V 按 q 头复制，现在平板上跑的）和 `split`（4 个 q 头
+  叠在行上、缓存原地读、分数拼接后再拆概率）。`cat` 在 32K 时 HTP 每步要复制缓存（含 2 个全局层的那片 decode 每步读
+  1.5 GB，4K 时 0.45 GB）；`split` 能省掉复制，但 32K 的 prefill 图 HTP 编译报 “elementwise op applied to mismatched
+  shapes”，还在查。只改分组、不拆缓存的写法在设备上 prefill 直接失败（错误 1003），不能用。
 
 ## HTP 内存
 
@@ -68,5 +74,9 @@ tools/npu_et/export_dory.sh 4096 out/c4096                       # 上下文 409
 # 只用插件：测速、回退一致性；批量验证和逐个算是否一致；逐位置打分（再用 compare_score.py 对参考实现）
 npu_test model.pte prompt.bin 128 16
 npu_test model.pte prompt.bin verify 64
-npu_test model.pte prompt.bin score score.txt
+npu_test model.pte prompt.bin score score.txt          # XTG_SCORE_STEP=1：逐个走 decode 图
+npu_test small.pte prompt.bin grow big.pte 64          # 换档
+npu_test model.pte prompt.bin kvcmp                    # prefill 和逐个算写进缓存的 KV 有多少字节不同
 ```
+
+实测和精度见 [Y900 报告](reports/2026-11-08-y900-npu-dory.md)。

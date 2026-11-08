@@ -15,6 +15,7 @@
 
 import json
 import math
+import os
 from typing import List, Optional, Tuple
 
 import torch
@@ -96,6 +97,18 @@ def apply_rope(x, freqs_cos, freqs_sin):
     return torch.cat([x_r * freqs_cos - x_i * freqs_sin, x_r * freqs_sin + x_i * freqs_cos], dim=-1)
 
 
+# the attention's graph (XTG_DORY_ATTN, read when the model is built): "cat" (the cache and the new rows concatenated,
+# K / V repeated per q head; runs on the Y900, slow at 32K) or "split" (grouped q heads, the caches read in place)
+ATTENTION = os.environ.get("XTG_DORY_ATTN", "cat")
+
+
+def repeat_kv(h: torch.Tensor, n_rep: int) -> torch.Tensor:
+    if n_rep == 1:
+        return h
+    b, n_kv, a, c = h.shape
+    return h[:, :, None, :, :].expand(b, n_kv, n_rep, a, c).reshape(b, n_kv * n_rep, a, c)
+
+
 def conv1x1(cin: int, cout: int) -> nn.Conv2d:
     return nn.Conv2d(cin, cout, 1, bias=False)
 
@@ -173,17 +186,37 @@ class DoryAttention(nn.Module):
             q = torch.matmul(q, self.r3_weight)
             k = torch.matmul(k, self.r3_weight)
         k = k.transpose(2, 3)
-        if k_cache is not None:
-            kh = torch.cat([k_cache, k], dim=-1)
-            vh = torch.cat([v_cache, v], dim=2)
-        else:
-            kh, vh = k, v
+        if ATTENTION == "cat":
+            # the cache and the new rows concatenated, K / V repeated per q head: what runs on the Y900 today; at 32K
+            # the HTP copies the caches every step (the concat and the repeat)
+            kh = torch.cat([k_cache, k], dim=-1)   # this order (both concats, then both repeats) is the graph the
+            vh = torch.cat([v_cache, v], dim=2)    # saved calibrations were made on: the observers go by position
+            kh = repeat_kv(kh, self.n_rep)
+            vh = repeat_kv(vh, self.n_rep)
+            attn = q @ kh   # qs carries 1 / sqrt(head_dim)
+            if self.enable_masked_softmax:
+                attn_min = torch.amin(attn, dim=-1, keepdim=True)
+                attn = torch.where(atten_mask == 0, attn, attn_min - 20)
+            else:
+                attn = attn + atten_mask
+            attn = torch.softmax(attn, dim=-1)
+            y = (attn @ vh).transpose(1, 2).reshape(bsz, seq_len, -1)
+            y = self.o_norm(y * torch.sigmoid(gate))
+            out = from_conv(self.wo(to_conv(y)))
+            return self.res(x, out), k, v
         # grouped-query attention without a copy of K / V per q head (expanding them materialized n_rep copies on the
         # HTP, about 1 GB per layer at 32K): the n_rep q heads of a KV head (heads kv * n_rep + r) go along the rows,
         # the mask repeated with them
         q = q.reshape(bsz, self.n_kv_heads, self.n_rep * seq_len, self.head_dim)
         mask = atten_mask.repeat(1, 1, self.n_rep, 1) if self.n_rep > 1 else atten_mask
-        attn = q @ kh   # qs carries 1 / sqrt(head_dim)
+        # the cache and the new rows apart (scores joined, probabilities split): a cat of the cache with the new K / V
+        # copies the whole cache every step on the HTP. qs carries 1 / sqrt(head_dim). The calibration graph's caches
+        # have no slots, which keeps the same nodes (DoryQuantRecipe shares the cache matmuls' encodings).
+        slots = k_cache.shape[-1] if k_cache is not None else 0
+        if k_cache is None:
+            k_cache = k.new_zeros(bsz, self.n_kv_heads, self.head_dim, 0)
+            v_cache = v.new_zeros(bsz, self.n_kv_heads, 0, self.head_dim)
+        attn = torch.cat([q @ k_cache, q @ k], dim=-1)
         if self.enable_masked_softmax:
             # Dory's scores reach the hundreds: an additive -255 mask would let masked keys win
             attn_min = torch.amin(attn, dim=-1, keepdim=True)
@@ -191,7 +224,12 @@ class DoryAttention(nn.Module):
         else:
             attn = attn + mask
         attn = torch.softmax(attn, dim=-1)
-        y = (attn @ vh).reshape(bsz, self.n_heads, seq_len, self.head_dim)
+        # split, not sliced: with no cache slots (the calibration graph) a slice of everything exports as an alias,
+        # and every graph must have the same nodes. The new rows' product first: the cache product shares its
+        # encoding, and a shared encoding may only refer to a node earlier in the graph.
+        p_cache, p_new = torch.split(attn, [slots, attn.shape[-1] - slots], dim=-1)
+        y = p_new @ v + p_cache @ v_cache
+        y = y.reshape(bsz, self.n_heads, seq_len, self.head_dim)
         y = y.transpose(1, 2).reshape(bsz, seq_len, -1)
         y = self.o_norm(y * torch.sigmoid(gate))
         out = from_conv(self.wo(to_conv(y)))

@@ -79,6 +79,48 @@ if "class DoryQuantRecipe" not in s:
     print("patched static_llm_quant_recipe.py")
 else:
     print("already static_llm_quant_recipe.py")
+# Dory reads its KV caches in place (dory/model.py): the cache matmuls take the caches in the 8-bit encodings of the
+# new K / V, the cache-value product shares the new-value product's encoding (no slots in the calibration graph)
+cache_annotation = '''
+
+def annotate_dory_cache_matmuls(gm: torch.fx.GraphModule) -> None:
+    """Dory's attention reads the KV caches in place (dory/model.py): scores = cat(q @ K_cache, q @ K_new), out =
+    p_cache @ V_cache + p_new @ V_new. annotate_kv_8bit covers the matmuls of the new rows; the cache matmuls take
+    the cache inputs in the 8-bit encodings of the new K / V (what the runner writes back into the caches), and the
+    cache-value product shares the new-value product's encoding (in the calibration graph the caches have no slots
+    and that product is 0)."""
+    from executorch.backends.qualcomm.quantizer.quantizer import get_16a8w_qnn_ptq_config
+    from executorch.backends.qualcomm.quantizer.rules import Q_ANNOTATION_KEY
+    from torchao.quantization.pt2e.quantizer import QuantizationAnnotation, SharedQuantizationSpec
+
+    cfg = get_16a8w_qnn_ptq_config(act_observer=MinMaxObserver)
+    matmul = torch.ops.aten.matmul.default
+    for node in gm.graph.nodes:
+        if node.op != "call_function" or node.target != matmul or node.args[1].op != "placeholder":
+            continue
+        a, cache = node.args[0], node.args[1]
+        user = next(iter(node.users))
+        if user.target == torch.ops.aten.cat.default:   # scores: the new rows' matmul has the same q
+            new = next(u for u in a.users if u is not node and u.target == matmul)
+            out = cfg.output_activation
+        else:   # values: the new rows' product is the other operand of the add
+            new = next(x for x in user.args if x is not node)
+            out = SharedQuantizationSpec(new)
+        node.meta[Q_ANNOTATION_KEY] = QuantizationAnnotation(
+            input_qspec_map={a: cfg.input_activation, cache: SharedQuantizationSpec(new.args[1])},
+            output_qspec=out,
+            _annotated=True,
+        )
+'''
+s = open(p).read()
+if "def annotate_dory_cache_matmuls" not in s:
+    i = s.index("\n\nclass DoryQuantRecipe")
+    s = s[:i] + cache_annotation.rstrip("\n") + "\n" + s[i:]
+    j = s.index("self.recipe.custom_quant_annotations.append(annotate_kv_8bit)", s.index("class DoryQuantRecipe"))
+    j = s.index("\n", j) + 1
+    s = s[:j] + "        self.recipe.custom_quant_annotations.append(annotate_dory_cache_matmuls)\n" + s[j:]
+    open(p, "w").write(s)
+    print("patched static_llm_quant_recipe.py (cache matmuls)")
 
 edit("__init__.py", "    CodegenQuantRecipe,\n", "    CodegenQuantRecipe,\n    DoryQuantRecipe,\n", "DoryQuantRecipe,")
 edit("__init__.py",
@@ -249,8 +291,27 @@ for cls in ("class Dory_4B(LLMModelConfig):", "class Dory_Tiny(LLMModelConfig):"
             s = s[:j] + shard_line + s[j + len(old):]
             print("patched __init__.py num_sharding", cls)
 open(p, "w").write(s)
-# Dory's shared cache layout (dory/model.py cache_slots): the KV inputs are found by the shape of their concat
-# (cache slots + AR), the masks are [B, 1, AR, slots + AR] for the full and the ring caches
+# Dory's shared cache layout (dory/model.py cache_slots): the KV inputs are found by their own shapes (cache slots;
+# the graph reads them in place, no concat), the masks are [B, 1, AR, slots + AR] for the full and the ring caches
+p = os.path.join(L, "wrappers/llm_wrappers.py")
+s = open(p).read()
+for old_cols in ("            cols = {ctx} if ar == ctx else {ctx + ar, ring + ar}\n",
+                 "            cols = {0} if ar == ctx else {ctx, ring}\n"):   # trees patched before both graphs
+    if old_cols in s:
+        s = s.replace(old_cols, "            cols = {0, ctx} if ar == ctx else {ctx, ring, ctx + ar, ring + ar}\n")
+        open(p, "w").write(s)
+        print("patched wrappers/llm_wrappers.py (cache shapes)")
+edit("wrappers/llm_wrappers.py",
+     "                and users[0].meta[\"val\"].size()[-2:] in self.kv_cache_shape\n"
+     "            ):\n",
+     "                and (\n"
+     "                    users[0].meta[\"val\"].size()[-2:] in self.kv_cache_shape\n"
+     "                    # Dory reads the caches in place: the input's own shape\n"
+     "                    or self.control_args.decoder_model in (\"dory-4b\", \"dory-tiny\", \"dory-4b-l1\")\n"
+     "                    and node.meta[\"val\"].size()[-2:] in self.kv_cache_shape\n"
+     "                )\n"
+     "            ):\n",
+     "# Dory reads the caches in place: the input's own shape")
 edit("wrappers/llm_wrappers.py",
      "        else:\n"
      "            self.kv_cache_shape = {\n"
@@ -258,14 +319,14 @@ edit("wrappers/llm_wrappers.py",
      "        elif self.control_args.decoder_model in (\"dory-4b\", \"dory-tiny\"):\n"
      "            hd, ar = self.meta[\"get_head_dim\"], self.meta[\"get_ar_len\"]\n"
      "            ctx, ring = self.meta[\"get_max_context_len\"], self.meta[\"get_ring_slots\"]\n"
-     "            cols = {ctx} if ar == ctx else {ctx + ar, ring + ar}\n"
+     "            cols = {0, ctx} if ar == ctx else {ctx, ring, ctx + ar, ring + ar}\n"
      "            self.kv_cache_shape = (\n"
      "                {(hd, c) for c in cols} | {(c, hd) for c in cols} | {(hd, ar), (ar, hd)}\n"
      "            )\n"
      "        else:\n"
      "            self.kv_cache_shape = {\n"
      "                # single head, kv input\n",
-     "            cols = {ctx} if ar == ctx else {ctx + ar, ring + ar}")
+     "            self.kv_cache_shape = (\n                {(hd, c) for c in cols}")
 edit("wrappers/llm_wrappers.py",
      "        freq_shape = {\n"
      "            (self.meta[\"get_ar_len\"], self.meta[\"get_head_dim\"] // 2),\n"
