@@ -494,6 +494,14 @@ int xtg_npu_grow(xtg_npu* h, const char* pte_path, char* err, int err_len) {
   return -1;
 }
 
+int64_t xtg_npu_debug_cache(xtg_npu* h, int instance, int value, void* out, int64_t len) {
+  if (instance < 0 || instance >= int(h->inst.size())) return -1;
+  const Inst& I = h->inst[size_t(instance)];
+  const int64_t bytes = int64_t(h->heads) * h->hd * I.slots;
+  if (out && len >= bytes) std::memcpy(out, value ? I.v : I.k, size_t(bytes));
+  return bytes;
+}
+
 void xtg_npu_close(xtg_npu* h) { delete h; }
 
 }  // extern "C"

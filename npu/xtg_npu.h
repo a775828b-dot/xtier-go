@@ -40,6 +40,9 @@ int xtg_npu_restore(xtg_npu* h, int slot);   // 0 on success
 // the caches, the position and the snapshots it can hold come along, nothing is computed again. The current
 // contexts are freed first; on failure the session reopens its own .pte with the same state and returns -1.
 int xtg_npu_grow(xtg_npu* h, const char* pte_path, char* err, int err_len);
+// Debugging: a copy of KV instance `instance`'s K (value 0, [heads][head_dim][slots]) or V (1, [heads][slots]
+// [head_dim]) cache, 8-bit; returns its size (out may be NULL), -1 for no such instance.
+int64_t xtg_npu_debug_cache(xtg_npu* h, int instance, int value, void* out, int64_t len);
 void xtg_npu_close(xtg_npu* h);
 
 #ifdef __cplusplus

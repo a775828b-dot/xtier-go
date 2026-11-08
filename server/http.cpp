@@ -2,6 +2,7 @@
 
 #include <httplib/httplib.h>
 
+#include <chrono>
 #include <ctime>
 #include <random>
 
@@ -251,9 +252,11 @@ void HttpServer::routes() {
     res.set_header("Cache-Control", "no-cache");
     res.set_chunked_content_provider(
         "text/event-stream",
-        [job, id, model, created, usage, first = true](size_t, httplib::DataSink& sink) mutable {
+        [job, id, model, created, usage, first = true, last = std::chrono::steady_clock::now()](
+            size_t, httplib::DataSink& sink) mutable {
           auto send = [&](const json& j) {
             std::string line = "data: " + dump(j) + "\n\n";
+            last = std::chrono::steady_clock::now();
             return sink.write(line.data(), line.size());
           };
           if (first) {
@@ -266,6 +269,13 @@ void HttpServer::routes() {
           Event e;
           if (!job->pop(e, 200)) {
             if (!sink.is_writable()) {
+              job->cancelled = true;
+              return false;
+            }
+            // a long prefill sends nothing for minutes: an empty delta every 15 s keeps clients with a stream idle
+            // timeout (DSH: 5 minutes) waiting
+            if (std::chrono::steady_clock::now() - last > std::chrono::seconds(15) &&
+                !send(chunk(id, model, created, json::object(), nullptr))) {
               job->cancelled = true;
               return false;
             }

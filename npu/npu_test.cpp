@@ -137,6 +137,45 @@ int main(int argc, char** argv) {
   }
   double pre = prompt.size() / (now() - t0);
   double dec = 0;
+  if (std::string(argv[3]) == "kvcmp") {
+    // the caches after prefill steps (all at once) against one token at a time (the decode graph): per KV
+    // instance, how many of the written K / V bytes differ and by how much
+    const int ni = atoi(strstr(info, "\"kv_instances\":") + 15);
+    auto dump = [&]() {
+      std::vector<std::vector<uint8_t>> c;
+      for (int l = 0; l < ni; ++l)
+        for (int v = 0; v < 2; ++v) {
+          std::vector<uint8_t> b(size_t(xtg_npu_debug_cache(h, l, v, nullptr, 0)));
+          xtg_npu_debug_cache(h, l, v, b.data(), int64_t(b.size()));
+          c.push_back(std::move(b));
+        }
+      return c;
+    };
+    auto first = dump();   // after the prefill above
+    xtg_npu_rewind(h, 0);
+    for (size_t i = 0; i < prompt.size(); ++i)
+      if (xtg_npu_forward(h, &prompt[i], 1, 0, nullptr, nullptr, err, sizeof(err)) != 0) {
+        fprintf(stderr, "decode: %s\n", err);
+        return 1;
+      }
+    auto second = dump();
+    for (int l = 0; l < ni; ++l)
+      for (int v = 0; v < 2; ++v) {
+        const auto& a = first[size_t(2 * l + v)];
+        const auto& b = second[size_t(2 * l + v)];
+        size_t diff = 0, big = 0;
+        for (size_t i = 0; i < a.size(); ++i) {
+          const int d = std::abs(int(a[i]) - int(b[i]));
+          diff += d != 0;
+          big += d > 2;
+        }
+        if (l < 4 || l % 8 == 0 || l == ni - 1)
+          printf("instance %2d %s: %zu of %zu bytes differ, %zu by more than 2 steps\n", l, v ? "V" : "K", diff,
+                 a.size(), big);
+      }
+    xtg_npu_close(h);
+    return 0;
+  }
   if (std::string(argv[3]) == "grow") {
     n = argc > 5 ? atoi(argv[5]) : 64;
     std::vector<int> out = generate(h, a.best, n, vocab, &dec);
