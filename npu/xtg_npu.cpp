@@ -11,6 +11,8 @@
 #include <executorch/runtime/core/exec_aten/exec_aten.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -252,21 +254,63 @@ struct xtg_npu {
   }
 
   // the first rows of the last step's K / V into the caches
+  // per KV instance: the byte map from the graph's K / V output encoding to the cache input's. The exports quantize
+  // them apart and for V they differ (ExecuTorch's KV annotation leaves each V cache in the encoding of the next
+  // layer's new V): writing the bytes back as they are put every cached V off by up to 7x. Empty = copy.
+  std::vector<std::array<uint8_t, 256>> kmap, vmap;
+
   void commit(const Graph& g, int rows) {
     const size_t c = size_t(heads) * size_t(hd);
     for (int l = 0; l < n; ++l) {
       const Inst& I = inst[size_t(l)];
       const std::byte* ko = g.kout[size_t(l)];
       const std::byte* vo = g.vout[size_t(l)];
+      const uint8_t* km = kmap.empty() ? nullptr : kmap[size_t(l)].data();
+      const uint8_t* vm = vmap.empty() ? nullptr : vmap[size_t(l)].data();
       for (int r = 0; r < rows; ++r) {
         const size_t slot = I.ring ? size_t((n_past + r) % ring) : size_t(n_past + r);
-        for (size_t e = 0; e < c; ++e) I.k[e * size_t(I.slots) + slot] = ko[e * size_t(g.ar) + size_t(r)];
-        for (int h = 0; h < heads; ++h)
-          std::memcpy(I.v + (size_t(h) * size_t(I.slots) + slot) * size_t(hd),
-                      vo + (size_t(h) * size_t(g.ar) + size_t(r)) * size_t(hd), size_t(hd));
+        for (size_t e = 0; e < c; ++e) {
+          const std::byte b = ko[e * size_t(g.ar) + size_t(r)];
+          I.k[e * size_t(I.slots) + slot] = km ? std::byte(km[uint8_t(b)]) : b;
+        }
+        for (int h = 0; h < heads; ++h) {
+          std::byte* dst = I.v + (size_t(h) * size_t(I.slots) + slot) * size_t(hd);
+          const std::byte* src = vo + (size_t(h) * size_t(g.ar) + size_t(r)) * size_t(hd);
+          if (vm)
+            for (int d = 0; d < hd; ++d) dst[d] = std::byte(vm[uint8_t(src[d])]);
+          else
+            std::memcpy(dst, src, size_t(hd));
+        }
       }
     }
     for (int r = 0; r < rows; ++r) ring_pos[size_t((n_past + r) % ring)] = n_past + r;
+  }
+
+  // kv_requant: a JSON file of [[s_out, zp_out, s_in, zp_in] for K_0 .. K_n-1, then V_0 .. V_n-1] (tools/npu_et
+  // kv_enc_check.py --json)
+  void load_requant(const std::string& file) {
+    std::FILE* f = std::fopen(file.c_str(), "r");
+    NPU_CHECK(f, "kv_requant: cannot open %s", file.c_str());
+    std::vector<double> v;
+    double x;
+    int ch;
+    while ((ch = std::fgetc(f)) != EOF)   // the numbers, whatever the brackets
+      if ((ch >= '0' && ch <= '9') || ch == '-' || ch == '.') {
+        std::ungetc(ch, f);
+        if (std::fscanf(f, "%lf", &x) == 1) v.push_back(x);
+      }
+    std::fclose(f);
+    NPU_CHECK(v.size() == size_t(8 * n), "kv_requant: %zu numbers for %d KV instances", v.size(), n);
+    kmap.assign(size_t(n), {});
+    vmap.assign(size_t(n), {});
+    for (int i = 0; i < 2 * n; ++i) {
+      const double* e = &v[size_t(4 * i)];
+      auto& m = i < n ? kmap[size_t(i)] : vmap[size_t(i - n)];
+      for (int b = 0; b < 256; ++b) {
+        const long q = std::lround((b - e[1]) * e[0] / e[2] + e[3]);
+        m[size_t(b)] = uint8_t(std::min(255L, std::max(0L, q)));
+      }
+    }
   }
 
   void step(Graph& g, const int32_t* tokens, int rows, int want, xtg_npu_logits_fn fn, void* user, int row0) {
@@ -404,6 +448,17 @@ void set_err(char* err, int len, const char* what) {
   if (err && len > 0) snprintf(err, size_t(len), "%s", what);
 }
 
+std::string option_str(const char* options, const char* key) {
+  if (!options) return "";
+  std::string o = options, k = std::string("\"") + key + "\"";
+  size_t p = o.find(k);
+  if (p == std::string::npos) return "";
+  p = o.find('"', o.find(':', p + k.size()));
+  if (p == std::string::npos) return "";
+  const size_t e = o.find('"', p + 1);
+  return e == std::string::npos ? "" : o.substr(p + 1, e - p - 1);
+}
+
 int option_int(const char* options, const char* key, int fallback) {
   if (!options) return fallback;
   std::string o = options, k = std::string("\"") + key + "\"";
@@ -421,6 +476,19 @@ xtg_npu* xtg_npu_open(const char* pte_path, const char* options, char* err, int 
   try {
     h->decode_rows_opt = option_int(options, "decode_rows", 0);
     h->open(pte_path, option_int(options, "snapshots", 2), option_int(options, "mlock", 0) != 0);
+    // the byte maps from the K / V outputs' encodings to the caches' (they differ for V in the tools/npu_et exports):
+    // the option, else NAME.kvmap.json next to NAME.pte
+    std::string rq = option_str(options, "kv_requant");
+    if (rq.empty()) {
+      std::string side = pte_path;
+      if (side.size() > 4 && side.compare(side.size() - 4, 4, ".pte") == 0) side.resize(side.size() - 4);
+      side += ".kvmap.json";
+      if (std::FILE* f = std::fopen(side.c_str(), "r")) {
+        std::fclose(f);
+        rq = side;
+      }
+    }
+    if (!rq.empty()) h->load_requant(rq);
   } catch (const std::exception& e) {
     set_err(err, err_len, e.what());
     return nullptr;
@@ -469,11 +537,14 @@ int xtg_npu_grow(xtg_npu* h, const char* pte_path, char* err, int err_len) {
   const int n_snapshots = int(h->snaps.size()), rows = h->decode_rows_opt;
   const bool lock = h->locked;
   const std::string old = h->path;
+  const auto kmap = h->kmap, vmap = h->vmap;   // one calibration for every bucket: the same encodings
   xtg_npu::State s = h->save();
   auto reopen = [&](const std::string& p) {
     auto next = std::make_unique<xtg_npu>();
     next->decode_rows_opt = rows;
     next->open(p.c_str(), n_snapshots, lock);
+    next->kmap = kmap;
+    next->vmap = vmap;
     next->load(s);
     return next;
   };

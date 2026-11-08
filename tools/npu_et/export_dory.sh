@@ -26,8 +26,13 @@ if [ "$DAR" -gt 1 ]; then
 else
   MODE=(--model_mode hybrid)
 fi
+HERE=$(dirname "$(realpath "$0")")
 cd "$ET_ROOT"
 python examples/qualcomm/oss_scripts/llama/llama.py --build_folder build-android --soc_model SM8750 --compile_only \
   --decoder_model "$MODEL" "${MODE[@]}" --prefill_ar_len "$AR" --max_seq_len "$CTX" --max_context_len "$CTX" \
   --temperature 0 --prompt "x" --calib_samples "$CALIB_SAMPLES" --artifact "$OUT"
-ls -la "$OUT"/*.pte
+# the K / V byte maps libxtg_npu needs next to the .pte (rename both together: NAME.pte, NAME.kvmap.json)
+for pte in "$OUT"/*.pte; do
+  python "$HERE/kv_enc_check.py" "$pte" "${pte%.pte}.kvmap.json" | tail -2
+done
+ls -la "$OUT"/*.pte "$OUT"/*.kvmap.json

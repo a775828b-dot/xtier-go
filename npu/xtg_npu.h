@@ -18,7 +18,8 @@ typedef void (*xtg_npu_logits_fn)(int row, const float* logits, void* user);
 
 // Load the .pte (options: JSON, may be empty; "snapshots": ring snapshots kept, default 2; "decode_rows": calls of
 // up to this many tokens use the decode method, default 4 for AR-1 and AR-D otherwise, -1 never; "mlock": 1 locks
-// the mapped .pte, default 0). NULL on failure, the reason in err.
+// the mapped .pte, default 0; "kv_requant": the K / V byte maps from the outputs' encodings to the caches', default
+// NAME.kvmap.json next to NAME.pte, written by tools/npu_et/kv_enc_check.py). NULL on failure, the reason in err.
 xtg_npu* xtg_npu_open(const char* pte_path, const char* options, char* err, int err_len);
 // {"vocab", "context", "max_position", "prefill_ar", "decode_ar", "kv_instances", "ring_instances", "ring_slots",
 //  "sliding_window", "kv_bytes", "snapshots", "logits_scale", "logits_zero_point"} as JSON; the length or -1.
