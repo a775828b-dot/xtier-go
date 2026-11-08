@@ -15,7 +15,7 @@
 | `tools/npu_et/compare_score.py` | 设备上逐位置的 NLL / argmax（`npu_test … score`）对参考实现 |
 | `npu/xtg_npu.{h,cpp}` | 插件：C 接口；KV 缓存、两张掩码、回退、环形缓存快照都在这里，缓存放 RPC 共享内存，NPU 原地读 |
 | `npu/npu_test.cpp` | 只用插件的测速、回退一致性、批量验证一致性和逐位置打分 |
-| `packs/dory/npu.cpp` | 引擎侧：dlopen 插件、按块报进度和取消、回退、快照 |
+| `packs/dory/npu.cpp` | 引擎侧：dlopen 插件、按块报进度和取消、按块选档位、回退、快照 |
 
 ## 图
 
@@ -33,13 +33,22 @@
 - **两张图共用权重**：prefill 每次 64 行；decode 每次 8 行（ExecuTorch 的 lookahead 模式，`--ngram 2 --window 8 --gcap 0`
   把 decode 图定成 8 行）。投机解码一次验证最多 8 个 token，耗时和算 1 个差不多（decode 受带宽限制）。
 - **上下文档位**：静态图的 KV 长度是固定的，每个档位一个 `.pte`；全局注意力每步都按档位长度算（被掩的槽也要读），所以
-  短会话用小档位更快。`npu_model` 可以列几个档位（从小到大，`…-c4096.pte,…-c32k.pte`）：会话从第一个开始，请求放不下时
-  插件把 KV 原样搬到放得下的最小档位（`xtg_npu_grow`：全局缓存按位置拷前 n_past 个槽，滑窗环、位置、快照一起搬，不重算），
-  对话变短时再搬回小档位；平板上搬 1056 个位置 1.5 秒，搬完继续生成的 token 和不搬时相同。同一套档位必须用同一份校准导出。
-- **注意力的两种写法**（`XTG_DORY_ATTN`）：`cat`（缓存和新行拼起来、K / V 按 q 头复制，现在平板上跑的）和 `split`（4 个 q 头
-  叠在行上、缓存原地读、分数拼接后再拆概率）。`cat` 在 32K 时 HTP 每步要复制缓存（含 2 个全局层的那片 decode 每步读
-  1.5 GB，4K 时 0.45 GB）；`split` 能省掉复制，但 32K 的 prefill 图 HTP 编译报 “elementwise op applied to mismatched
-  shapes”，还在查。只改分组、不拆缓存的写法在设备上 prefill 直接失败（错误 1003），不能用。
+  短会话用小档位更快。`npu_model` 可以列几个档位（从小到大，`…-c4096.pte,…-c32k.pte`）：**每个 prefill 块都在放得下它的
+  最小档位里算**，长提示先填满小档位、再往上搬（`xtg_npu_grow`：全局缓存按位置拷前 n_past 个槽，滑窗环、位置、快照一起搬，
+  不重算），对话变短时再搬回小档位；平板上搬 1056 个位置 1.5 秒，搬完继续生成的 token 和不搬时相同。同一套档位必须用同一份
+  校准导出（KV 的编码要一样）。
+- **注意力的两种写法**（`XTG_DORY_ATTN`）：`split` 是一个 KV 头的 4 个 q 头叠在行上、和缓存直接相乘（缓存原地读，分数
+  拼接后再拆概率）；`cat` 是常见写法：缓存和新行拼起来、K / V 按 q 头复制 4 份。`cat` 在长档位每步要把整个缓存搬好几遍
+  （4K 时中间结果还放得进 VTCM，长档位全走 DDR）：1 次循环 decode 每步 4K 72 ms、20K 247 ms、32K 418 ms，prefill 478 /
+  73 / 50 tok/s。`split` 1 次循环 decode 每步 4K 64 ms、8K 80 ms，但 32K 680 ms（HTP 对大的分组乘法调度很差，编译估算每步读
+  37 GB）；prefill 342 / 162 / 35 tok/s。所以 App 的档位是 `split` 的 4K、8K 加 `cat` 的 32K（同一份校准，KV 编码相同，
+  可以互相搬）。另外插件的共享内存原来把缓存算了 3 遍（32K 时 2 GB），DSP 映射不下、QNN 每步拷贝；改成只算一遍后
+  `cat` 32K 从 418 降到 280 ms。
+- **HTP 跨头广播的坑**：后端的 MHA→SHA 拆头 pass 只认得 `cat` 那种图，`split` 不会被拆头。第一片之后 RoPE 的 cos / sin 是
+  图的输入，HTP 会把它们跨头广播的乘法编错（编译日志 “elementwise op applied to mismatched shapes”，循环段每个注意力层
+  一处），1 次循环 4K 的 NLL 1.61（`cat` 1.016）。把 `cat` 的拆头关掉（ExecuTorch `llama.py` 的 `use_mha2sha`）也一样坏，
+  所以问题在广播、不在写法。`split` 时 RoPE 表先复制成 q / k 的完整形状，掩码也复制成分数的完整形状：tiny 上和 `cat` 的
+  argmax 一致率从 31% 回到 96.5%。只改分组、不拆缓存的写法在设备上 prefill 直接失败（错误 1003）。
 
 ## HTP 内存
 
