@@ -94,11 +94,21 @@ def apply_rope(x, freqs_cos, freqs_sin):
     if x.dim() == 4:
         freqs_cos = freqs_cos[None, None, :, :]
         freqs_sin = freqs_sin[None, None, :, :]
+        if ATTENTION == "split":
+            # the tables at x's full shape. Past the first shard they are graph inputs, and the HTP compiles their
+            # broadcast over the heads wrong ("elementwise op applied to mismatched shapes" at compile time; Dory
+            # tiny on the Y900: argmax agrees with the cat graph 31% of the time, 96.5% with the repeat). The cat
+            # graph gets the backend's MHA -> SHA split: one head per op, nothing to broadcast.
+            freqs_cos = freqs_cos.repeat(1, x.shape[1], 1, 1)
+            freqs_sin = freqs_sin.repeat(1, x.shape[1], 1, 1)
     return torch.cat([x_r * freqs_cos - x_i * freqs_sin, x_r * freqs_sin + x_i * freqs_cos], dim=-1)
 
 
 # the attention's graph (XTG_DORY_ATTN, read when the model is built): "cat" (the cache and the new rows concatenated,
-# K / V repeated per q head; runs on the Y900, slow at 32K) or "split" (grouped q heads, the caches read in place)
+# K / V repeated per q head) or "split" (grouped q heads, the caches read in place). 1-loop Dory on the Y900, a decode
+# step: split 64 / 80 / 680 ms at 4K / 8K / 32K, cat 72 / - / 280 ms (the HTP schedules split's big grouped products
+# badly at 32K); prefill split 342 / 162 / 35 tok/s, cat 478 / - / 54. The app's buckets: split 4K and 8K, cat 32K
+# (one calibration's KV encodings, so a session moves between them)
 ATTENTION = os.environ.get("XTG_DORY_ATTN", "cat")
 
 
@@ -208,7 +218,9 @@ class DoryAttention(nn.Module):
         # HTP, about 1 GB per layer at 32K): the n_rep q heads of a KV head (heads kv * n_rep + r) go along the rows,
         # the mask repeated with them
         q = q.reshape(bsz, self.n_kv_heads, self.n_rep * seq_len, self.head_dim)
-        mask = atten_mask.repeat(1, 1, self.n_rep, 1) if self.n_rep > 1 else atten_mask
+        # the mask at the scores' full shape, KV heads too: this graph gets no MHA -> SHA split, so nothing should
+        # broadcast over the heads (see apply_rope)
+        mask = atten_mask.repeat(1, self.n_kv_heads, self.n_rep, 1)
         # the cache and the new rows apart (scores joined, probabilities split): a cat of the cache with the new K / V
         # copies the whole cache every step on the HTP. qs carries 1 / sqrt(head_dim). The calibration graph's caches
         # have no slots, which keeps the same nodes (DoryQuantRecipe shares the cache matmuls' encodings).
