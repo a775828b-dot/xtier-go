@@ -316,21 +316,22 @@ void Runtime::run(Job& job) {
     if (session_->n_past() == int64_t(cached_.size()) && session_->rewind(int64_t(l))) {
       reuse = int64_t(l);
     } else {
-      int best = -1;
-      int64_t pos = -1;
+      // the snapshots by how much of the prefix they keep: one at or before the common prefix, or one a little past
+      // it that the session can go back from (within the sliding rings' slack: a client that sends the history
+      // without its reasoning diverges a few tokens before the previous prompt's end, where the snapshot is)
+      std::vector<std::pair<int64_t, int>> cand;
       for (int s = 0; s < session_->snapshot_slots(); ++s) {
         int64_t p = session_->snapshot_pos(s);
-        if (p >= 0 && p <= int64_t(l) && p > pos) {
-          best = s;
-          pos = p;
+        if (p >= 0) cand.push_back({std::min<int64_t>(p, int64_t(l)), s});
+      }
+      std::sort(cand.rbegin(), cand.rend());
+      for (const auto& [keep, s] : cand) {
+        if (session_->restore(s) && (session_->n_past() <= int64_t(l) || session_->rewind(int64_t(l)))) {
+          reuse = session_->n_past();
+          break;
         }
       }
-      if (best >= 0 && session_->restore(best)) {
-        reuse = pos;
-      } else {
-        session_->reset();
-        reuse = 0;
-      }
+      if (reuse == 0) session_->reset();
     }
     cached_.resize(size_t(reuse));
   }
