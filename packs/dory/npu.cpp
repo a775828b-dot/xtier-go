@@ -2,7 +2,12 @@
 // tools/npu_et from the BF16 checkpoint: 16-bit activations, 4-bit weight blocks, 8-bit KV), run by libxtg_npu
 // (npu/xtg_npu.h), which this file loads with dlopen: the engine builds and runs without ExecuTorch, and the app
 // ships the plugin and the QNN libraries only in builds that have them. The checkpoint directory holds config.json,
-// the tokenizer and the chat template as for the other backends, plus the .pte (option npu_model).
+// the tokenizer and the chat template as for the other backends, plus the .pte files (option npu_model).
+//
+// A static graph's KV length is fixed, so a context comes in buckets, one .pte each: npu_model may list several
+// (smallest context first, "a-c32k.pte,a-c96k.pte"). The session starts in the first and moves to the next one that
+// fits when a request needs more room (xtg_npu_grow: the caches move over, nothing is computed again); the model
+// reports the last bucket's context.
 #include <dirent.h>
 #include <dlfcn.h>
 
@@ -28,6 +33,7 @@ struct Api {
   decltype(&xtg_npu_snapshot_pos) snapshot_pos = nullptr;
   decltype(&xtg_npu_snapshot) snapshot = nullptr;
   decltype(&xtg_npu_restore) restore = nullptr;
+  decltype(&xtg_npu_grow) grow = nullptr;   // optional: older plugins run one bucket
   decltype(&xtg_npu_close) close = nullptr;
 };
 
@@ -65,15 +71,26 @@ const Api& plugin(const std::string& path) {
   a.snapshot_pos = reinterpret_cast<decltype(a.snapshot_pos)>(sym("xtg_npu_snapshot_pos"));
   a.snapshot = reinterpret_cast<decltype(a.snapshot)>(sym("xtg_npu_snapshot"));
   a.restore = reinterpret_cast<decltype(a.restore)>(sym("xtg_npu_restore"));
+  a.grow = reinterpret_cast<decltype(a.grow)>(dlsym(lib, "xtg_npu_grow"));
   a.close = reinterpret_cast<decltype(a.close)>(sym("xtg_npu_close"));
   api = a;
   return api;
 }
 
-// the .pte to run: the option, else the only one in the directory
-std::string find_pte(const std::string& dir, const json& o) {
-  std::string name = o.contains("npu_model") && o["npu_model"].is_string() ? o["npu_model"].get<std::string>() : "";
-  if (!name.empty()) return name[0] == '/' ? name : dir + "/" + name;
+// the .pte files to run, smallest context first: the option (comma separated), else the only one in the directory
+std::vector<std::string> find_ptes(const std::string& dir, const json& o) {
+  std::string names = o.contains("npu_model") && o["npu_model"].is_string() ? o["npu_model"].get<std::string>() : "";
+  std::vector<std::string> out;
+  for (size_t a = 0; a < names.size();) {
+    size_t b = names.find(',', a);
+    if (b == std::string::npos) b = names.size();
+    std::string n = names.substr(a, b - a);
+    while (!n.empty() && n.front() == ' ') n.erase(n.begin());
+    while (!n.empty() && n.back() == ' ') n.pop_back();
+    if (!n.empty()) out.push_back(n[0] == '/' ? n : dir + "/" + n);
+    a = b + 1;
+  }
+  if (!out.empty()) return out;
   std::vector<std::string> found;
   if (DIR* d = opendir(dir.c_str())) {
     while (dirent* e = readdir(d)) {
@@ -83,7 +100,22 @@ std::string find_pte(const std::string& dir, const json& o) {
     closedir(d);
   }
   XTG_CHECK(found.size() == 1, "backend=npu: %zu .pte files in %s (set npu_model)", found.size(), dir.c_str());
-  return dir + "/" + found[0];
+  return {dir + "/" + found[0]};
+}
+
+std::string base_name(const std::string& path) { return path.substr(path.find_last_of('/') + 1); }
+
+// what tools/npu_et/export_dory.sh names say: ...-c4096.pte / ...-c32k.pte (the context), ...-l1-... (the loops)
+void name_hints(const std::string& path, int64_t* ctx, int* loops) {
+  const std::string name = base_name(path);
+  for (size_t i = 0; i + 2 < name.size(); ++i) {
+    if (name[i] != '-' || !std::isdigit(static_cast<unsigned char>(name[i + 2]))) continue;
+    const int64_t v = std::atoll(name.c_str() + i + 2);
+    size_t j = i + 2;
+    while (j < name.size() && std::isdigit(static_cast<unsigned char>(name[j]))) ++j;
+    if (name[i + 1] == 'c' && ctx) *ctx = j < name.size() && (name[j] == 'k' || name[j] == 'K') ? v * 1024 : v;
+    if (name[i + 1] == 'l' && loops && j < name.size() && name[j] == '-') *loops = int(v);
+  }
 }
 
 class NpuModel;
@@ -108,50 +140,36 @@ class NpuSession : public Session {
 
 class NpuModel : public Model {
  public:
-  NpuModel(const std::string& dir, const json& config, const json& o) {
+  NpuModel(const std::string& dir, const json& config, const json& o) : config_(config) {
     const std::string lib = o.contains("npu_plugin") && o["npu_plugin"].is_string()
                                 ? o["npu_plugin"].get<std::string>() : "libxtg_npu.so";
     api_ = &plugin(lib);
-    pte_ = find_pte(dir, o);
+    for (const std::string& p : find_ptes(dir, o)) {
+      int64_t ctx = 0;
+      name_hints(p, &ctx, nullptr);
+      buckets_.push_back({p, ctx});
+    }
+    XTG_CHECK(buckets_.size() == 1 || api_->grow, "backend=npu: %zu buckets, the plugin cannot grow a session",
+              buckets_.size());
     char err[1024] = {0};
     double t0 = now_s();
-    h_ = api_->open(pte_.c_str(), o.dump().c_str(), err, sizeof(err));
+    h_ = api_->open(buckets_[0].path.c_str(), o.dump().c_str(), err, sizeof(err));
     XTG_CHECK(h_, "backend=npu: %s", err);
-    char buf[2048];
-    XTG_CHECK(api_->info(h_, buf, sizeof(buf)) > 0, "backend=npu: info");
-    meta_ = json::parse(buf);
+    refresh();
+    buckets_[0].context = meta_.at("context").get<int64_t>();
+    for (size_t i = 1; i < buckets_.size(); ++i)
+      XTG_CHECK(buckets_[i].context > buckets_[i - 1].context, "backend=npu: %s after %s: list the buckets by "
+                "context (the names say it: ...-c32k.pte)", base_name(buckets_[i].path).c_str(),
+                base_name(buckets_[i - 1].path).c_str());
     chunk_ = meta_.value("prefill_ar", 128);
     info_.model_type = "dory";
     info_.vocab = meta_.at("vocab").get<int>();
-    info_.context = meta_.at("context").get<int64_t>();
+    info_.context = buckets_.back().context;
     info_.eos_ids = read_eos(dir, config);
-    // the loops this export runs (a .pte may run fewer than config.json says): one KV instance per attention
-    // evaluation, input + loops x recurrent + output
-    int loops = config.value("n_recurrent_loops", 2);
-    if (config.contains("layer_types")) {
-      const json& t = config["layer_types"];
-      const int ni = config.value("n_input_layers", 0), nr = config.value("n_recurrent_layers", 0);
-      int a_in = 0, a_rec = 0, a_out = 0;
-      for (int i = 0; i < int(t.size()); ++i)
-        (i < ni ? a_in : i < ni + nr ? a_rec : a_out) += t[size_t(i)].get<std::string>() != "mlp";
-      const int kv = meta_.value("kv_instances", 0);
-      if (a_rec > 0 && kv > a_in + a_out && (kv - a_in - a_out) % a_rec == 0) loops = (kv - a_in - a_out) / a_rec;
-    }
-    const size_t slash = pte_.find_last_of('/');
-    info_.describe = json{{"backend", "npu"},
-                          {"kernels", "Hexagon HTP · 16a4w"},
-                          {"pte", slash == std::string::npos ? pte_ : pte_.substr(slash + 1)},
-                          {"loops", loops},
-                          {"decode_rows", meta_.value("decode_ar", 1)},
-                          {"kv_mode", config.value("recurrent_kv_cache_mode", std::string("per_loop"))},
-                          {"kv_dtype", "uint8"},
-                          {"context", info_.context},
-                          {"prefill_chunk", chunk_},
-                          {"kv_instances", meta_.value("kv_instances", 0)},
-                          {"kv_bytes", meta_.value("kv_bytes", 0)},
-                          {"threads", 1}};
-    log("npu: %s loaded in %.1f s (context %lld, prefill chunk %d, %d KV instances)", pte_.c_str(), now_s() - t0,
-        (long long)info_.context, chunk_, meta_.value("kv_instances", 0));
+    describe();
+    log("npu: %s loaded in %.1f s (context %lld of %lld, prefill chunk %d, %d KV instances)", buckets_[0].path.c_str(),
+        now_s() - t0, (long long)meta_.at("context").get<int64_t>(), (long long)info_.context, chunk_,
+        meta_.value("kv_instances", 0));
   }
   ~NpuModel() override {
     if (h_) api_->close(h_);
@@ -159,19 +177,83 @@ class NpuModel : public Model {
   const ModelInfo& info() const override { return info_; }
   std::unique_ptr<Session> new_session() override { return std::make_unique<NpuSession>(*this); }
 
+  // the session in the smallest bucket with room for `need` positions: up when a request outgrows the current one,
+  // down when a shorter conversation follows (a static graph pays for its whole context every step)
+  void fit(int64_t need) {
+    size_t to = 0;
+    while (to < buckets_.size() && buckets_[to].context < need) ++to;
+    XTG_CHECK(to < buckets_.size(), "context full: %lld positions (the largest bucket holds %lld)", (long long)need,
+              (long long)info_.context);
+    if (to == cur_ || api_->pos(h_) > buckets_[to].context) return;
+    char err[1024] = {0};
+    const double t0 = now_s();
+    const int rc = api_->grow(h_, buckets_[to].path.c_str(), err, sizeof(err));
+    XTG_CHECK(rc == 0, "backend=npu: moving to %s: %s", base_name(buckets_[to].path).c_str(), err);
+    cur_ = to;
+    refresh();
+    describe();
+    log("npu: %lld positions moved to %s (context %lld) in %.1f s", (long long)api_->pos(h_),
+        base_name(buckets_[to].path).c_str(), (long long)meta_.at("context").get<int64_t>(), now_s() - t0);
+  }
+
   const Api* api_ = nullptr;
   xtg_npu* h_ = nullptr;
-  std::string pte_;
-  json meta_;
+  json config_, meta_;
   ModelInfo info_;
   int chunk_ = 128;
+  struct Bucket {
+    std::string path;
+    int64_t context = 0;
+  };
+  std::vector<Bucket> buckets_;
+  size_t cur_ = 0;
+
+ private:
+  void refresh() {
+    char buf[2048];
+    XTG_CHECK(api_->info(h_, buf, sizeof(buf)) > 0, "backend=npu: info");
+    meta_ = json::parse(buf);
+  }
+
+  void describe() {
+    // the loops this export runs (a .pte may run fewer than config.json says): one KV instance per attention
+    // evaluation, input + loops x recurrent + output
+    int loops = config_.value("n_recurrent_loops", 2);
+    if (config_.contains("layer_types")) {
+      const json& t = config_["layer_types"];
+      const int ni = config_.value("n_input_layers", 0), nr = config_.value("n_recurrent_layers", 0);
+      int a_in = 0, a_rec = 0, a_out = 0;
+      for (int i = 0; i < int(t.size()); ++i)
+        (i < ni ? a_in : i < ni + nr ? a_rec : a_out) += t[size_t(i)].get<std::string>() != "mlp";
+      const int kv = meta_.value("kv_instances", 0);
+      if (a_rec > 0 && kv > a_in + a_out && (kv - a_in - a_out) % a_rec == 0) loops = (kv - a_in - a_out) / a_rec;
+    }
+    json names = json::array();
+    for (const Bucket& b : buckets_) names.push_back(base_name(b.path));
+    info_.describe = json{{"backend", "npu"},
+                          {"kernels", "Hexagon HTP · 16a4w"},
+                          {"pte", base_name(buckets_[cur_].path)},
+                          {"buckets", names},
+                          {"bucket_context", meta_.at("context").get<int64_t>()},
+                          {"loops", loops},
+                          {"decode_rows", meta_.value("decode_ar", 1)},
+                          {"kv_mode", config_.value("recurrent_kv_cache_mode", std::string("per_loop"))},
+                          {"kv_dtype", "uint8"},
+                          {"context", info_.context},
+                          {"prefill_chunk", chunk_},
+                          {"kv_instances", meta_.value("kv_instances", 0)},
+                          {"kv_bytes", meta_.value("kv_bytes", 0)},
+                          {"threads", 1}};
+  }
 };
 
 int64_t NpuSession::n_past() const { return M_.api_->pos(M_.h_); }
 
 void NpuSession::forward(const int32_t* tokens, int n, Logits want, const LogitsFn& on_logits) {
-  XTG_CHECK(n_past() + n <= M_.info_.context, "context full: %lld + %d > %lld tokens", (long long)n_past(), n,
+  const int64_t need = n_past() + n;
+  XTG_CHECK(need <= M_.info_.context, "context full: %lld + %d > %lld tokens", (long long)n_past(), n,
             (long long)M_.info_.context);
+  if (M_.buckets_.size() > 1) M_.fit(need);
   struct Ctx {
     const LogitsFn* fn;
     int off;
@@ -213,24 +295,16 @@ std::unique_ptr<Model> load_npu(const std::string& dir, const json& config, cons
 }
 
 json estimate_npu(const std::string& dir, const json& config, const json& options) {
-  // the .pte (weights, mapped) and the plugin's caches in the layout of tools/npu_et: a full-attention instance
-  // holds the context, a sliding one a ring of window + 64 slots, and each ring snapshot copies the rings. The
-  // context and the loops come from the file name (tools/npu_et/export_dory.sh: ...-c4096.pte, ...-c32k.pte,
-  // ...-l1-...): the estimate runs before the .pte is opened.
-  const std::string path = find_pte(dir, options);
+  // the largest bucket (the session ends up there): its .pte (weights, mapped) and the plugin's caches in the layout
+  // of tools/npu_et (a full-attention instance holds the context, a sliding one a ring of window + 64 slots, each
+  // ring snapshot copies the rings). The context and the loops come from the file name: the estimate runs before
+  // the .pte is opened.
+  const std::string path = find_ptes(dir, options).back();
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   const size_t pte = f.good() ? size_t(f.tellg()) : 0;
-  const std::string name = path.substr(path.find_last_of('/') + 1);
   int64_t ctx = 4096;
   int loops = config.value("n_recurrent_loops", 2);
-  for (size_t i = 0; i + 2 < name.size(); ++i) {
-    if (name[i] != '-' || !std::isdigit(static_cast<unsigned char>(name[i + 2]))) continue;
-    const int64_t v = std::atoll(name.c_str() + i + 2);
-    size_t j = i + 2;
-    while (j < name.size() && std::isdigit(static_cast<unsigned char>(name[j]))) ++j;
-    if (name[i + 1] == 'c') ctx = j < name.size() && (name[j] == 'k' || name[j] == 'K') ? v * 1024 : v;
-    if (name[i + 1] == 'l' && j < name.size() && name[j] == '-') loops = int(v);
-  }
+  name_hints(path, &ctx, &loops);
   const int n_in = config.value("n_input_layers", 0), n_rec = config.value("n_recurrent_layers", 0);
   const int64_t ring = config.value("sliding_window", 1024) + 64;
   int full = 0, sliding = 0;

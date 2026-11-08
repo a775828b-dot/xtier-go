@@ -6,6 +6,8 @@
 // npu_test PTE TOKENS.bin verify N: N greedy tokens one at a time, then the same tokens again as verify steps of up
 // to decode_ar rows (what a speculative decoder sends): the argmax of every row must be the next generated token.
 // Then the time of one step of k = 1, 2, 4, .. decode_ar tokens (a forward and a rewind).
+// npu_test PTE TOKENS.bin grow OTHER.pte N: N greedy tokens, back to the middle of them, move the session to the
+// other bucket (xtg_npu_grow) and generate the second half again there: the same ids?
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -135,6 +137,36 @@ int main(int argc, char** argv) {
   }
   double pre = prompt.size() / (now() - t0);
   double dec = 0;
+  if (std::string(argv[3]) == "grow") {
+    n = argc > 5 ? atoi(argv[5]) : 64;
+    std::vector<int> out = generate(h, a.best, n, vocab, &dec);
+    printf("prompt %zu tokens: prefill %.1f tok/s; %zu generated: decode %.2f tok/s\n", prompt.size(), pre,
+           out.size(), dec);
+    const size_t half = out.size() / 2;
+    if (xtg_npu_rewind(h, int64_t(prompt.size() + half)) != 0) {
+      fprintf(stderr, "rewind failed\n");
+      return 1;
+    }
+    t0 = now();
+    if (xtg_npu_grow(h, argv[4], err, sizeof(err)) != 0) {
+      fprintf(stderr, "grow: %s\n", err);
+      return 1;
+    }
+    const double gt = now() - t0;
+    xtg_npu_info(h, info, sizeof(info));
+    printf("moved %lld positions in %.1f s, resident %.2f GiB: %s\n", (long long)xtg_npu_pos(h), gt, rss_gib(), info);
+    int32_t t = out[half];
+    if (xtg_npu_forward(h, &t, 1, 1, on_logits, &a, err, sizeof(err)) != 0) {
+      fprintf(stderr, "decode after grow: %s\n", err);
+      return 1;
+    }
+    std::vector<int> again = generate(h, a.best, int(out.size() - half - 1), vocab, &dec);
+    int same = 0;
+    for (size_t i = 0; i < again.size() && half + 1 + i < out.size(); ++i) same += again[i] == out[half + 1 + i];
+    printf("after the move: %d of %zu tokens the same, decode %.2f tok/s\n", same, again.size(), dec);
+    xtg_npu_close(h);
+    return 0;
+  }
   if (std::string(argv[3]) == "verify") {
     const int ar = atoi(strstr(info, "\"decode_ar\":") + 12);
     n = argc > 4 ? atoi(argv[4]) : 64;

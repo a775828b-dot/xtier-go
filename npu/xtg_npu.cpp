@@ -116,8 +116,12 @@ struct xtg_npu {
   std::vector<Snap> snaps;
   std::vector<float> row;
   size_t cache_bytes = 0;
+  std::string path;   // what open() loaded, with its settings (grow() reopens it on failure)
+  bool locked = false;
 
   void open(const char* path, int n_snapshots, bool lock) {
+    this->path = path;
+    locked = lock;
     // the HTP copies the context binaries into its own memory when the methods load; locking the mapped file as
     // well (ExecuTorch's runner does) would keep a second copy of the weights resident
     mod = std::make_unique<Module>(path, lock ? Module::LoadMode::MmapUseMlockIgnoreErrors : Module::LoadMode::Mmap);
@@ -331,6 +335,54 @@ struct xtg_npu {
     s.pos = n_past;
   }
 
+  // the session state that moves to another bucket: the first n_past positions of the full caches, the rings and
+  // what their slots hold, the position, the snapshots (ring copies: the rings are the same size in every bucket)
+  struct State {
+    std::vector<std::vector<std::byte>> k, v;
+    std::vector<int64_t> ring_pos;
+    std::vector<Snap> snaps;
+    int64_t n_past = 0;
+  };
+
+  State save() {
+    State s;
+    const size_t np = size_t(n_past);
+    for (const Inst& I : inst) {
+      const size_t used = I.ring ? size_t(I.slots) : np;
+      std::vector<std::byte> k(size_t(heads) * size_t(hd) * used), v(k.size());
+      for (size_t r = 0; r < size_t(heads) * size_t(hd); ++r)   // K rows [heads][hd] of slots
+        std::memcpy(k.data() + r * used, I.k + r * size_t(I.slots), used);
+      for (size_t h = 0; h < size_t(heads); ++h)   // V [heads][slots][hd]
+        std::memcpy(v.data() + h * used * size_t(hd), I.v + h * size_t(I.slots) * size_t(hd), used * size_t(hd));
+      s.k.push_back(std::move(k));
+      s.v.push_back(std::move(v));
+    }
+    s.ring_pos = ring_pos;
+    s.snaps = std::move(snaps);
+    s.n_past = n_past;
+    return s;
+  }
+
+  void load(State& s) {
+    NPU_CHECK(s.k.size() == inst.size(), "%zu KV instances, the session had %zu", inst.size(), s.k.size());
+    NPU_CHECK(s.n_past <= ctx && s.ring_pos.size() == size_t(ring), "context %d for %lld positions, ring %d", ctx,
+              (long long)s.n_past, ring);
+    for (size_t l = 0; l < inst.size(); ++l) {
+      const Inst& I = inst[l];
+      const size_t used = s.k[l].size() / (size_t(heads) * size_t(hd));
+      NPU_CHECK(used <= size_t(I.slots) && (!I.ring || used == size_t(I.slots)), "instance %zu: %zu of %d slots", l,
+                used, I.slots);
+      for (size_t r = 0; r < size_t(heads) * size_t(hd); ++r)
+        std::memcpy(I.k + r * size_t(I.slots), s.k[l].data() + r * used, used);
+      for (size_t h = 0; h < size_t(heads); ++h)
+        std::memcpy(I.v + h * size_t(I.slots) * size_t(hd), s.v[l].data() + h * used * size_t(hd), used * size_t(hd));
+    }
+    ring_pos = s.ring_pos;
+    n_past = s.n_past;
+    for (size_t i = 0; i < snaps.size() && i < s.snaps.size(); ++i)   // a smaller bucket drops what it cannot hold
+      if (s.snaps[i].pos <= ctx) snaps[i] = std::move(s.snaps[i]);
+  }
+
   bool restore(int slot) {
     if (slot < 0 || slot >= int(snaps.size()) || snaps[size_t(slot)].pos < 0) return false;
     const Snap& s = snaps[size_t(slot)];
@@ -412,6 +464,35 @@ int64_t xtg_npu_snapshot_pos(xtg_npu* h, int slot) {
 void xtg_npu_snapshot(xtg_npu* h, int slot) { h->snapshot(slot); }
 
 int xtg_npu_restore(xtg_npu* h, int slot) { return h->restore(slot) ? 0 : -1; }
+
+int xtg_npu_grow(xtg_npu* h, const char* pte_path, char* err, int err_len) {
+  const int n_snapshots = int(h->snaps.size()), rows = h->decode_rows_opt;
+  const bool lock = h->locked;
+  const std::string old = h->path;
+  xtg_npu::State s = h->save();
+  auto reopen = [&](const std::string& p) {
+    auto next = std::make_unique<xtg_npu>();
+    next->decode_rows_opt = rows;
+    next->open(p.c_str(), n_snapshots, lock);
+    next->load(s);
+    return next;
+  };
+  // the contexts go first (the module, then the shared memory it reads): two buckets' weights may not fit together
+  h->mod.reset();
+  h->mem.reset();
+  try {
+    *h = std::move(*reopen(pte_path));
+    return 0;
+  } catch (const std::exception& e) {
+    set_err(err, err_len, e.what());
+  }
+  try {
+    *h = std::move(*reopen(old));
+  } catch (const std::exception& e) {   // the session is gone: forward and the rest fail until it is closed
+    set_err(err, err_len, (std::string(err ? err : "") + "; reopening " + old + ": " + e.what()).c_str());
+  }
+  return -1;
+}
 
 void xtg_npu_close(xtg_npu* h) { delete h; }
 

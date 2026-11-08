@@ -36,6 +36,10 @@ int xtg_npu_snapshot_slots(xtg_npu* h);
 int64_t xtg_npu_snapshot_pos(xtg_npu* h, int slot);   // -1: empty
 void xtg_npu_snapshot(xtg_npu* h, int slot);
 int xtg_npu_restore(xtg_npu* h, int slot);   // 0 on success
+// Move the session to another .pte of the same export with another context length (a bucket that holds pos()):
+// the caches, the position and the snapshots it can hold come along, nothing is computed again. The current
+// contexts are freed first; on failure the session reopens its own .pte with the same state and returns -1.
+int xtg_npu_grow(xtg_npu* h, const char* pte_path, char* err, int err_len);
 void xtg_npu_close(xtg_npu* h);
 
 #ifdef __cplusplus
