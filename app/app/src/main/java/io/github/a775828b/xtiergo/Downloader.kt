@@ -86,14 +86,15 @@ class Downloader(private val store: ModelStore) {
         .followSslRedirects(true)
         .build()
 
-    /** null when every file is in place and checked, else what went wrong. */
+    /** null when every file is in place and checked, else what went wrong. Local files (no source) are skipped. */
     fun run(card: Card, mirror: String, onProgress: (Progress) -> Unit): String? {
         val dir = store.dir(card).apply { mkdirs() }
-        val total = card.files.sumOf { it.size }
-        val doneFiles = AtomicLong(card.files.filter { File(dir, it.name).length() == it.size }.sumOf { it.size })
+        val files = card.files.filter { !it.local }
+        val total = files.sumOf { it.size }
+        val doneFiles = AtomicLong(files.filter { File(dir, it.name).length() == it.size }.sumOf { it.size })
         val started = System.nanoTime()
         val fresh = AtomicLong(0)   // bytes fetched in this run (for the speed)
-        for (f in card.files) {
+        for (f in files) {
             if (cancelled.get()) return "已停止"
             val dest = File(dir, f.name)
             if (dest.exists() && dest.length() == f.size) {

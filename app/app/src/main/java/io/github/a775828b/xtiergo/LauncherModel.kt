@@ -77,7 +77,7 @@ class LauncherModel(private val app: Context) {
 
     fun start() {
         val c = card()
-        if (!store.ready(c)) {
+        if (!store.ready(c, values)) {
             message = "模型文件还不全：先下载或用 adb push 到 ${store.dir(c).path}"
             return
         }
@@ -178,7 +178,7 @@ class LauncherModel(private val app: Context) {
 
     suspend fun verify() {
         message = "正在校验 sha256…"
-        val bad = withContext(Dispatchers.IO) { store.verify(card()) }
+        val bad = withContext(Dispatchers.IO) { store.verify(card(), values) }
         message = if (bad.isEmpty()) "校验通过" else "校验不通过：${bad.joinToString()}（删掉重新下载）"
     }
 
@@ -190,7 +190,7 @@ class LauncherModel(private val app: Context) {
             status = fetchStatus(c.port)
             note(status)
             device = withContext(Dispatchers.IO) { DeviceInfo.read(app) }
-            files = withContext(Dispatchers.IO) { store.status(c) }
+            files = withContext(Dispatchers.IO) { store.status(c, values) }
             downloading = Downloads.running && Downloads.cardId == c.id
             downloadProgress = if (Downloads.cardId == c.id) Downloads.progress else null
             downloadResult = if (Downloads.cardId == c.id) Downloads.result else ""
@@ -260,7 +260,10 @@ class LauncherModel(private val app: Context) {
                     last.optString("finish")))
         }
         seenRequests = n
-        spark = (spark + t.optDouble("decode_tok_s", 0.0).toFloat()).takeLast(90)
+        // the live decode rate of the request in flight, 0 between requests and in prefill
+        val cur = t.optJSONObject("current")
+        val live = if (cur?.optString("phase") == "decode") cur.optDouble("decode_tok_s", 0.0) else 0.0
+        spark = (spark + live.toFloat()).takeLast(90)
     }
 
     private fun post(port: Int, path: String, body: String, timeoutMs: Int = 5000): String {

@@ -16,7 +16,7 @@ class ModelStore(private val context: Context) {
 
     enum class FileState { Missing, Downloading, Partial, Unverified, Ready, Bad }
 
-    data class Status(val name: String, val state: FileState, val bytes: Long, val size: Long)
+    data class Status(val name: String, val state: FileState, val bytes: Long, val size: Long, val local: Boolean = false)
 
     private val verified = context.getSharedPreferences("verified", Context.MODE_PRIVATE)
 
@@ -26,10 +26,11 @@ class ModelStore(private val context: Context) {
         check(verified.edit().putString(stamp(file), sha).commit()) { "无法保存文件校验结果" }
     }
 
-    fun status(card: Card): List<Status> {
+    /** The files the option values need (Card.filesFor), each with its state. */
+    fun status(card: Card, values: Map<String, String>): List<Status> {
         val downloading = Downloads.running && Downloads.cardId == card.id
         val current = Downloads.progress?.file
-        return card.files.map { f ->
+        return card.filesFor(values).map { f ->
             val file = File(dir(card), f.name)
             val part = File(file.path + ".part")
             val checked = verified.getString(stamp(file), null)
@@ -43,16 +44,16 @@ class ModelStore(private val context: Context) {
                 file.exists() -> Status(f.name, FileState.Bad, file.length(), f.size)
                 part.exists() -> Status(f.name, FileState.Partial, part.length(), f.size)
                 else -> Status(f.name, FileState.Missing, 0, f.size)
-            }
+            }.copy(local = f.local)
         }
     }
 
-    fun ready(card: Card): Boolean = status(card).all { it.state == FileState.Ready }
+    fun ready(card: Card, values: Map<String, String>): Boolean = status(card, values).all { it.state == FileState.Ready }
 
-    /** sha256 of the files that carry one (slow for the weights: call off the main thread). */
-    fun verify(card: Card): List<String> {
+    /** sha256 of the needed files that carry one (slow for the weights: call off the main thread). */
+    fun verify(card: Card, values: Map<String, String>): List<String> {
         val bad = mutableListOf<String>()
-        for (f in card.files) {
+        for (f in card.filesFor(values)) {
             val sha = f.sha256 ?: continue
             val file = File(dir(card), f.name)
             if (!file.exists() || file.length() != f.size) {

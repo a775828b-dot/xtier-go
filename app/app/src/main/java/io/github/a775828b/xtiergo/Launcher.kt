@@ -24,7 +24,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,22 +46,28 @@ import org.json.JSONObject
 // follows the loading phases and, once online, the server's decode rate. Three columns on a wide screen, the rail
 // on top below 1080 dp, one scrolling column on a phone.
 
-private const val SUBTITLE = "本机推理 · 自研 C++ 引擎（CPU NEON / Adreno OpenCL）· 127.0.0.1 上的 OpenAI 兼容接口，给 DSH Go X 用"
+private const val SUBTITLE = "本机推理 · 整步跑在高通 NPU（Hexagon V79，ExecuTorch QNN 静态图），Adreno GPU / CPU 备用 · 127.0.0.1 上的 OpenAI 兼容接口，给 DSH Go X 用"
 private const val FOOT = "默认参数 = configs/*/card.json 里的实测配置，改动过的项会标出。一次只跑一个模型；服务在后台进程里，关掉启动台不影响它。"
 
 private val PHASES = listOf("files" to "文件", "tokenizer" to "分词器", "weights" to "权重", "kv" to "KV 缓存",
     "warmup" to "预热", "online" to "ONLINE")
 
 @Composable
-fun Launcher(m: LauncherModel) {
+fun Launcher(m: LauncherModel, multiWindow: Boolean) {
     LaunchedEffect(Unit) { m.poll() }
+    // split screen / a floating window: the rate board next to the app that calls the server, the full console a tap away
+    var board by remember(multiWindow) { mutableStateOf(multiWindow) }
+    if (board && m.cards.isNotEmpty()) {
+        RateBoard(m) { board = false }
+        return
+    }
     Console(Modifier.fillMaxSize().background(Xt.bottom).safeDrawingPadding().padding(8.dp)) {
         if (m.cards.isEmpty()) {
             Text("没有模型卡片（assets/*/card.json）", color = Xt.r, modifier = Modifier.padding(24.dp))
             return@Console
         }
         Column(Modifier.fillMaxSize()) {
-            Header(m)
+            Header(m, if (multiWindow) ({ board = true }) else null)
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     maxWidth >= 1080.dp -> Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -87,7 +97,7 @@ fun Launcher(m: LauncherModel) {
 }
 
 @Composable
-private fun Header(m: LauncherModel) {
+private fun Header(m: LauncherModel, onRates: (() -> Unit)?) {
     val s = m.status
     val state = uiState(s)
     val c = m.card()
@@ -116,11 +126,18 @@ private fun Header(m: LauncherModel) {
         }
         if (narrow) Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             brand()
-            StatePill(state, sub)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                StatePill(state, sub, Modifier.weight(1f))
+                if (onRates != null) XtButton("速率表", small = true, onClick = onRates)
+            }
         } else Row(Modifier.padding(start = 22.dp, end = 22.dp, top = 16.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { brand() }
             Spacer(Modifier.width(16.dp))
             StatePill(state, sub, Modifier.widthIn(max = 420.dp))
+            if (onRates != null) {
+                Spacer(Modifier.width(10.dp))
+                XtButton("速率表", small = true, onClick = onRates)
+            }
         }
     }
 }
@@ -133,8 +150,11 @@ private fun Rail(m: LauncherModel, modifier: Modifier, column: Boolean) {
     XtPanel("MODELS · 模型", modifier, scroll = column) {
         Dim("README 实测 tok/s · 文本：短提示 · AGENT：编码代理会话", 10.sp)
         Spacer(Modifier.height(9.dp))
+        // cards share the port: the server's model directory says which card it runs
+        val dir = s?.optJSONObject("config")?.optString("model_dir").orEmpty()
         val tab = @Composable { c: Card, mod: Modifier ->
-            val running = if (s != null && s.optInt("port") == c.port && (live == "online" || live == "loading")) live else ""
+            val mine = s != null && s.optInt("port") == c.port && (dir.isEmpty() || dir.endsWith("/" + c.dir))
+            val running = if (mine && (live == "online" || live == "loading")) live else ""
             ModelTab(c, c.id == m.selected, running, mod) { m.select(c.id) }
         }
         if (column) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { for (c in m.cards) tab(c, Modifier.fillMaxWidth()) }
@@ -243,7 +263,7 @@ private fun FilesBox(m: LauncherModel, c: Card) {
                 ModelStore.FileState.Downloading -> "下载中 ${gib(f.bytes)} / ${gib(f.size)}" to Xt.c
                 ModelStore.FileState.Partial -> "不完整 ${gib(f.bytes)} / ${gib(f.size)}" to Xt.a
                 ModelStore.FileState.Bad -> "大小或校验不对" to Xt.r
-                ModelStore.FileState.Missing -> "缺" to Xt.a
+                ModelStore.FileState.Missing -> (if (f.local) "缺 · adb push" else "缺") to Xt.a
             }
             Row {
                 Dim(f.name, 12.sp, mono = true, lines = 1)
@@ -260,10 +280,13 @@ private fun FilesBox(m: LauncherModel, c: Card) {
                 XtButton("停止下载", small = true, danger = true) { m.cancelDownload() }
             }
             !ready -> {
-                Dim("直连下载：独立域名解析，不经系统 HTTP 代理（VPN 仍可能影响连接），中断后可续传", 11.sp)
+                val fetch = m.files.any { !it.local && it.state != ModelStore.FileState.Ready }
+                if (fetch) Dim("直连下载：独立域名解析，不经系统 HTTP 代理（VPN 仍可能影响连接），中断后可续传", 11.sp)
+                if (m.files.any { it.local && it.state != ModelStore.FileState.Ready })
+                    Dim("标 adb push 的文件没有下载源：在服务器上导出（docs/npu.md）后 adb push 到上面的目录", 11.sp)
                 @OptIn(ExperimentalLayoutApi::class)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (mirror in c.mirrors) XtButton("下载 · ${mirror.removePrefix("https://")}", small = true) { m.download(mirror) }
+                    if (fetch) for (mirror in c.mirrors) XtButton("下载 · ${mirror.removePrefix("https://")}", small = true) { m.download(mirror) }
                     if (m.files.any { it.state == ModelStore.FileState.Unverified })
                         XtButton("校验已有文件", small = true) { scope.launch { m.verify() } }
                 }
@@ -338,9 +361,15 @@ private fun Telemetry(m: LauncherModel, modifier: Modifier, scroll: Boolean) {
         }
         if (model != null) {
             Spacer(Modifier.height(8.dp))
-            Dim("${model.optInt("loops")} 次循环 · ${model.optString("kv_mode")} · ${model.optString("kv_dtype")} KV · 上下文 " +
-                "${model.optLong("context") / 1024}K · ${model.optString("kernels")} · ${model.optInt("threads")} 线程" +
-                model.optString("gpu_device").let { if (it.isNotEmpty()) " · $it" else "" }, 11.5.sp, mono = true)
+            val ctx = model.optLong("context")
+            val ctxLabel = if (ctx % 1024 == 0L) "${ctx / 1024}K" else "%.1fK".format(ctx / 1024.0)
+            if (model.optString("backend") == "npu")
+                Dim("NPU · ${model.optInt("loops")} 次循环 · 上下文 $ctxLabel · prefill ${model.optInt("prefill_chunk")} 行 / decode " +
+                    "${model.optInt("decode_rows")} 行 · 8 位 KV（${gib(model.optLong("kv_bytes"))}）· ${model.optString("pte")}", 11.5.sp, mono = true)
+            else
+                Dim("${model.optInt("loops")} 次循环 · ${model.optString("kv_mode")} · ${model.optString("kv_dtype")} KV · 上下文 $ctxLabel · " +
+                    "${model.optString("kernels")} · ${model.optInt("threads")} 线程" +
+                    model.optString("gpu_device").let { if (it.isNotEmpty()) " · $it" else "" }, 11.5.sp, mono = true)
         }
         t.optJSONObject("last")?.let { last ->
             Dim("上一请求 ${last.optInt("prompt_tokens")} 提示（命中 ${last.optInt("cached_tokens")}）· ${last.optInt("completion_tokens")} 生成 · " +

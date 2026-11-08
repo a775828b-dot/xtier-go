@@ -27,7 +27,14 @@ data class Option(
 
 data class Note(val whenAll: Map<String, String>, val text: String, val warn: Boolean)
 
-data class ModelFile(val name: String, val size: Long, val sha256: String?)
+// whenAll: needed only under these option values (one context bucket's .pte); local: no download source (adb push)
+data class ModelFile(
+    val name: String,
+    val size: Long,
+    val sha256: String?,
+    val whenAll: Map<String, String> = emptyMap(),
+    val local: Boolean = false,
+)
 
 data class Card(
     val id: String,
@@ -65,6 +72,10 @@ data class Card(
 
     fun activeNotes(values: Map<String, String>): List<Note> =
         notes.filter { n -> n.whenAll.all { (k, v) -> values[k] == v } }
+
+    /** The files these option values need. */
+    fun filesFor(values: Map<String, String>): List<ModelFile> =
+        files.filter { f -> f.whenAll.all { (k, v) -> values[k] == v } }
 
     /** The pack options, the template kwargs and the launch settings for these values. */
     fun launchConfig(modelDir: String, values: Map<String, String>): JSONObject {
@@ -112,7 +123,8 @@ data class Card(
             val files = model.getJSONArray("files").let { a ->
                 (0 until a.length()).map { i ->
                     val f = a.getJSONObject(i)
-                    ModelFile(f.getString("name"), f.getLong("size"), f.optString("sha256").ifEmpty { null })
+                    ModelFile(f.getString("name"), f.getLong("size"), f.optString("sha256").ifEmpty { null },
+                        strings(f.optJSONObject("when")), f.optBoolean("local", false))
                 }
             }
             val mirrors = model.optJSONArray("mirrors")?.let { a -> (0 until a.length()).map { a.getString(it) } }
